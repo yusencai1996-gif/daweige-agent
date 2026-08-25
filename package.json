@@ -1,0 +1,50 @@
+{
+  "name": "daweige-agent",
+  "productName": "大微阁",
+  "version": "0.2.2",
+  "description": "大微阁——桌面 AI 干活助理(水墨风,pi runtime,自填 API key)",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "author": "daweige",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "build": "electron-vite build",
+    "test:e2e": "playwright test",
+    "dist:win": "electron-vite build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@earendil-works/pi-session-backend-sqlite-node": "0.84.2",
+    "@sinclair/typebox": "^0.34.52",
+    "docx": "9.7.1",
+    "electron-updater": "^6.8.9",
+    "mammoth": "1.12.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "~5.2.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "eslint": "^9.39.5",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "~7.3.6",
+    "vitest": "^4.1.11"
+  }
+}

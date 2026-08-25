@@ -1,0 +1,48 @@
+/* 启动提醒 banner —— 无提醒时整个 stack 不渲染,不占布局 */
+.reminder-stack {
+  padding: 10px 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reminder-banner {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 13.5px;
+}
+.reminder-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+.reminder-text {
+  flex: 1;
+  min-width: 0;
+}
+.reminder-date {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-left: 6px;
+}
+.reminder-dismiss {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+.reminder-dismiss:hover {
+  color: var(--ink);
+  background: var(--ink-hover-06);
+}

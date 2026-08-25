@@ -1,0 +1,577 @@
+/* 角色模块(0.2.0)——只用现有 token;轻卡片、细描边、几乎无阴影 */
+
+/* ---- 角色卡(侧栏手风琴) ---- */
+.role-card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  margin: 4px 0;
+}
+
+.role-card-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 8px 7px 12px;
+}
+/* 当前角色:卡头左侧克制的朱砂竖条 */
+.role-card.current .role-card-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.role-card-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+}
+.role-card-title.as-label {
+  cursor: default;
+}
+
+.role-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  font-size: 13.5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-card-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.role-mount-warning {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 角色生命周期标记(deleting/delete_failed);failed 用朱砂点出异常态 */
+.role-lifecycle {
+  color: var(--muted);
+  margin-right: 4px;
+}
+.role-lifecycle.failed {
+  color: var(--accent);
+}
+
+/* 启动迁移失败弱警示横幅(侧栏角色区顶部,muted+细线,可关闭) */
+.migration-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 12px 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.migration-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.migration-banner-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.migration-banner-close:hover {
+  color: var(--ink);
+}
+
+.role-menu-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  padding: 4px 6px;
+  line-height: 0;
+}
+.role-menu-btn:hover {
+  background: var(--ink-hover-06);
+  color: var(--ink);
+}
+
+/* 操作菜单(键盘可达;打开时焦点进首项,Esc 关闭并焦点回触发按钮;
+   关闭靠 document 级 click-outside,不用 fixed 遮罩——760px 抽屉态 sidebar 带 transform,
+   fixed 后代会被收进侧栏盒子而跑偏;菜单锚定 .role-card-head) */
+.role-menu {
+  position: absolute;
+  right: 8px;
+  top: calc(100% - 2px);
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  min-width: 108px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-soft);
+  padding: 4px;
+}
+/* 列表末端角色:下方空间不够时向上展开,免被 .session-list 滚动容器裁掉 */
+.role-menu.up {
+  top: auto;
+  bottom: calc(100% - 2px);
+}
+.role-menu-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.role-menu-item:hover {
+  background: var(--ink-hover-06);
+}
+.role-menu-item.danger {
+  color: var(--accent);
+}
+
+/* ---- 角色下会话列表 ---- */
+.role-sessions {
+  padding: 2px 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.role-empty {
+  padding: 10px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.role-empty-text {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.role-new-session {
+  border: 1px dashed var(--line);
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}
+.role-new-session:hover:not([disabled]) {
+  color: var(--ink);
+  background: var(--ink-hover-04);
+}
+
+.role-card.ungrouped {
+  background: transparent;
+}
+
+/* ---- 空应用引导 ---- */
+.role-empty-app {
+  margin: 18px 8px;
+  padding: 18px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.role-empty-app-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.role-empty-app-text {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+/* ---- 归档入口(角色列表下、使用统计上) ---- */
+.archive-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.archive-entry:hover {
+  background: var(--ink-hover-06);
+}
+.archive-entry.empty {
+  color: var(--muted);
+}
+
+/* ---- overlay 对话框(向导 / 删除确认) ---- */
+.role-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(38, 53, 48, .18);
+}
+.role-dialog {
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--shadow-soft);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.role-dialog.wizard {
+  width: min(560px, calc(100vw - 48px));
+}
+.role-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.role-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.role-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.role-dialog-foot-gap {
+  flex: 1;
+}
+.role-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- 向导 ---- */
+.wizard-steps {
+  display: inline-flex;
+  gap: 6px;
+}
+.wizard-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.wizard-dot.on {
+  background: var(--accent);
+}
+
+.wizard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wizard-label {
+  font-weight: 500;
+}
+.wizard-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.wizard-error {
+  font-size: 12.5px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wizard-workspace {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.wizard-workspace-name {
+  font-weight: 600;
+}
+.wizard-workspace-path {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.wizard-templates {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.wizard-tpl {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  text-align: left;
+}
+.wizard-tpl:hover {
+  background: var(--ink-hover-04);
+}
+.wizard-tpl.selected {
+  border-color: var(--accent);
+}
+.wizard-tpl-name {
+  font-weight: 600;
+}
+.wizard-tpl-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.wizard-guardrails {
+  min-height: 160px;
+  resize: vertical;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.wizard-count {
+  font-size: 12px;
+  text-align: right;
+}
+
+/* ---- 守则编辑页 ---- */
+.rules-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 28px 20px;
+  gap: 12px;
+  max-width: 860px;
+}
+.rules-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rules-header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.rules-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.rules-sub {
+  font-size: 12.5px;
+}
+.rules-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rules-textarea {
+  flex: 1;
+  min-height: 280px;
+  resize: none;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.rules-count {
+  font-size: 12px;
+  text-align: right;
+}
+.rules-hint {
+  font-size: 12.5px;
+  color: var(--accent);
+}
+.rules-leave-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 8px 12px;
+  font-size: 12.5px;
+}
+
+/* ---- 归档区 ---- */
+.archive-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 28px 20px;
+  gap: 12px;
+  max-width: 860px;
+}
+.archive-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.archive-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.archive-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.archive-tabs {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+}
+.archive-tab {
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  padding: 3px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.archive-tab.selected {
+  background: var(--ink-hover-06);
+  color: var(--ink);
+}
+.archive-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.archive-empty {
+  padding: 20px 4px;
+  font-size: 13px;
+}
+.archive-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.archive-group-title {
+  font-size: 12px;
+  padding: 4px 2px 0;
+}
+.archive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 8px 12px;
+  /* 归档区整体弱化但可读 */
+  opacity: .82;
+}
+.archive-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.archive-row-title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archive-row-meta {
+  font-size: 12px;
+}
+.archive-row-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* ---- 删除影响清单 ---- */
+.delete-impact {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 危险按钮:朱砂描边,实心留给 hover */
+.btn-danger {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-danger:hover:not([disabled]) {
+  background: var(--accent);
+  color: rgba(255, 253, 247, 1);
+}
+.btn-ghost.danger {
+  color: var(--accent);
+}
+.btn-ghost.danger:hover:not([disabled]) {
+  color: var(--accent);
+  background: var(--ink-hover-06);
+}

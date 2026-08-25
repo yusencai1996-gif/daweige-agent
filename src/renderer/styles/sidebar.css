@@ -1,0 +1,268 @@
+/* 会话侧栏 —— 核心交互层:规整墨色、干净排版,不做水墨特效 */
+/* 分界竖线由 .app-root::after 全高贯通绘制,此处不再自带边线 */
+.sidebar {
+  width: 264px;
+  flex: 0 0 264px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: transparent;
+}
+
+.sidebar-head {
+  padding: 18px 16px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 4px;
+}
+
+.brand-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+.sidebar-new {
+  padding: 12px 16px 8px;
+}
+.sidebar-new .btn {
+  width: 100%;
+}
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-empty-tip {
+  padding: 14px 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* 会话行容器:⋯ 钮与小菜单锚定在这 */
+.session-row {
+  position: relative;
+}
+
+.session-item {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-md);
+  /* 右侧常驻留出 ⋯ 钮宽度(26px 钮 + 4px 定位 + 4px 呼吸):不 hover 是留白,
+     hover 时 ⋯ 淡入,会话名永不跳动、永不被遮挡 */
+  padding: 8px 34px 8px 24px;
+}
+.session-item:hover {
+  background: var(--ink-hover-04);
+}
+.session-item.active {
+  background: var(--ink-hover-06);
+  border-color: var(--line);
+}
+/* 当前会话:朱砂圆点标记(克制,不扩大装饰) */
+.session-item.active::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 17px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.session-title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-meta {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 会话行末「⋯」操作钮:hover 行淡入;菜单打开(aria-expanded)或行内有焦点时保持可见。
+   隐藏时 pointer-events:none,不抢「点开会话」的点击。 */
+.session-menu-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  padding: 0;
+  line-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity .15s cubic-bezier(.2, 0, 0, 1),
+    background-color .15s cubic-bezier(.2, 0, 0, 1),
+    color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.session-row:hover .session-menu-btn,
+.session-row:focus-within .session-menu-btn,
+.session-menu-btn[aria-expanded='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.session-menu-btn:hover {
+  color: var(--ink);
+  background: var(--ink-hover-06);
+}
+/* 会话行小菜单:复用 .role-menu 样式,往行内收一点 */
+/* 贴 ⋯ 钮下沿展开(锚点是整行,默认 100% 会比钮低约一行 padding,压到下一行按钮) */
+.session-menu {
+  right: 6px;
+  top: calc(100% - 10px);
+}
+
+.session-menu.up {
+  top: auto;
+  bottom: calc(100% - 10px);
+}
+
+/* 行内重命名 */
+.rename-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 247, .5);
+  padding: 3px 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 删除二次确认(行内) */
+.delete-confirm {
+  padding: 8px 10px 8px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--ink-hover-04);
+}
+.delete-confirm-text {
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.delete-confirm-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sidebar-foot {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.sidebar-notice {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  /* 通知最多两行,完整可读;3.2s 自动消失 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-width: 0;
+}
+.sidebar-notice:empty {
+  display: none;
+}
+/* 底部并排两入口:使用统计 + 设置 */
+.sidebar-foot-btns {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* 左下角设置:线性齿轮图标 + 小字 */
+.sidebar-settings-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 3px 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  transition: background-color .15s cubic-bezier(.2, 0, 0, 1), color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.sidebar-settings-btn:hover {
+  background: var(--ink-hover-06);
+  color: var(--ink);
+}
+
+.menu-btn {
+  display: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 2px 10px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+/* 窄窗口:侧栏收成浮层 */
+@media (max-width: 760px) {
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    transform: translateX(-105%);
+    transition: transform .2s cubic-bezier(.2, 0, 0, 1);
+    box-shadow: var(--shadow-soft);
+    /* 浮层悬在内容之上,需要实底;桌面态保持透明融入宣纸 */
+    background: var(--paper);
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .menu-btn {
+    display: inline-block;
+  }
+}
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  border: 0;
+  padding: 0;
+  background: rgba(38, 53, 48, .18);
+}
+@media (min-width: 761px) {
+  .sidebar-backdrop {
+    display: none;
+  }
+}

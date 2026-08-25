@@ -1,0 +1,143 @@
+/* 确认卡片 —— 浮层:贴输入区上方浮起,半透明面板 + 轻阴影,处理完消失 */
+.composer-area {
+  position: relative;
+}
+
+.approval-overlay {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  padding: 0 24px 10px;
+  z-index: 10;
+  pointer-events: none; /* 容器不挡消息流,卡片自身恢复交互 */
+}
+.approval-overlay .approval-stack {
+  max-width: 760px;
+  margin: 0 auto;
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+.approval-overlay .approval-card {
+  animation: approval-rise .15s cubic-bezier(.2, 0, 0, 1);
+}
+@keyframes approval-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .approval-overlay .approval-card {
+    animation: none;
+  }
+}
+
+.approval-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.approval-card {
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-soft);
+}
+
+.approval-status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+.status-dot.pending {
+  background: var(--accent);
+}
+.status-dot.running {
+  background: var(--ink);
+  animation: approval-pulse 1.2s ease-in-out infinite;
+}
+.status-dot.succeeded {
+  background: var(--ink);
+}
+.status-dot.rejected,
+.status-dot.failed {
+  background: var(--muted);
+}
+@keyframes approval-pulse {
+  50% { opacity: .3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.running {
+    animation: none;
+  }
+}
+
+.approval-title {
+  margin-top: 6px;
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.approval-desc {
+  margin-top: 4px;
+  color: var(--ink);
+}
+.approval-meta {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.approval-paths {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.approval-paths li {
+  word-break: break-all;
+}
+.approval-outside {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+.approval-note {
+  margin-top: 10px;
+}
+.approval-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.approval-result {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.approval-result.failed {
+  color: var(--accent);
+}
+.approval-echo-note {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}

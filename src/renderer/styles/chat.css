@@ -1,0 +1,322 @@
+/* 聊天窗 —— 核心交互层:规整墨色、清晰字阶、正常留白,无水墨特效 */
+/* 会话信息已上移到标题栏;模型/思考/用量等控件收进输入框工具行 */
+
+/* 消息流 */
+.message-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px 16px;
+}
+.message-column {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.msg-user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 9px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-assistant {
+  align-self: stretch;
+  min-width: 0;
+}
+.msg-role {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.msg-text {
+  word-break: break-word;
+}
+.msg-thinking {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 思考过程折叠块(A-02):收起一行弱化小字,展开全文左侧竖线缩进 */
+.thinking-block {
+  margin-bottom: 6px;
+}
+.thinking-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.thinking-toggle:hover {
+  color: var(--ink);
+}
+.thinking-body {
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-error {
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, transparent);
+  background: color-mix(in oklch, var(--accent) 6%, transparent);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.msg-error-text {
+  color: var(--ink);
+}
+.msg-error .btn {
+  align-self: flex-start;
+}
+
+/* 工具状态行(读操作等免确认工具) */
+.tool-status-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-status {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.tool-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+  transform: translateY(-1px);
+}
+.tool-status.running .tool-status-dot {
+  background: var(--ink);
+  animation: tool-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tool-pulse {
+  50% { opacity: .3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-status.running .tool-status-dot {
+    animation: none;
+  }
+}
+
+/* 底部输入框:不设分隔横线,输入卡片自身轮廓已够(验收反馈) */
+.composer-wrap {
+  background: transparent;
+  padding: 12px 24px 12px;
+}
+.composer {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 46px;
+  max-height: 160px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 253, 247, .5);
+  padding: 9px 12px;
+  line-height: 1.7;
+}
+.composer textarea::placeholder {
+  color: var(--muted);
+}
+
+/* 输入框下方工具行:左=侧栏开关/上传/权限,右=用量环/模型/思考/发送停止 */
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.composer-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 工具行图标按钮(上传文件等) */
+.composer-tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  transition: background-color .15s cubic-bezier(.2, 0, 0, 1), color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.composer-tool-btn:hover:not([disabled]) {
+  background: var(--ink-hover-06);
+  color: var(--ink);
+}
+.composer-tool-btn[disabled] {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* 权限指示:静态展示,不可点击 */
+.composer-perm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+  cursor: default;
+}
+
+.composer-import-notice {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 上下文用量环:轨道 --line,进度 --accent(朱砂,无渐变) */
+.context-ring {
+  display: flex;
+  align-items: center;
+  cursor: default;
+}
+.context-ring-track {
+  stroke: var(--line);
+  stroke-width: 1.6;
+}
+.context-ring-progress {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+/* 工具行紧凑下拉(模型 / 思考强度) */
+.provider-select,
+.thinking-select {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 2px 6px;
+  font-size: 12px;
+  max-width: 132px;
+  color: var(--ink);
+}
+
+/* 流式中的停止按钮:方块图标,hover 朱砂 */
+.composer-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  transition: background-color .15s cubic-bezier(.2, 0, 0, 1), color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.composer-stop-btn:hover {
+  color: var(--accent);
+  background: var(--ink-hover-06);
+}
+
+/* 空会话提示 */
+.chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.chat-empty-inner {
+  text-align: center;
+  color: var(--muted);
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 欢迎空状态 —— 外壳层,可有更明确的水墨气质与朱砂点缀 */
+.welcome {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.welcome-inner {
+  max-width: 480px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.welcome-title {
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: 10px;
+  text-indent: 10px; /* 视觉居中补偿字距 */
+}
+.welcome-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin: 20px 0;
+}
+.welcome-sub {
+  color: var(--muted);
+  line-height: 1.9;
+  margin-bottom: 22px;
+}
+
+/* 已归档会话打开时的弱提示条(0.2.0 角色化) */
+.archived-banner {
+  margin: 10px auto 0;
+  max-width: 720px;
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+}
