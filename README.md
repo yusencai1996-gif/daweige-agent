@@ -29,6 +29,12 @@ Windows 用户可前往 [GitHub Releases](https://github.com/yusencai1996-gif/da
 |---|---|
 | ![新建角色向导](docs/screenshots/wizard.png) | ![模型设置](docs/screenshots/settings.png) |
 
+## 使用统计
+
+热力图回顾一年的使用足迹，趋势图看最近每天各模型的用量分布：
+
+![使用统计](docs/screenshots/usage.png)
+
 ## 从源码构建
 
 需要 Node.js 24 或更高版本。
