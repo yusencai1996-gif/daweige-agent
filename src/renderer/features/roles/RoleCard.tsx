@@ -17,6 +17,7 @@ const TEMPLATE_SHORT: Record<RoleTemplateId, string> = {
   'file-steward': '管家',
   notebook: '记事',
   'legacy-empty': '旧档',
+  'manager-built-in': '总管',
 }
 
 /** lifecycle 卡头标记文案;ready 不标记。 */
@@ -112,6 +113,10 @@ export function RoleCard({
       {label}
     </button>
   )
+
+  // 类型防御(0.3.0):manager 由 ManagerCard 专门渲染,走到这里是分组逻辑漏了,
+  // 宁可不渲染也不能把总管当成普通 worker 卡(会带出改名/归档/删除角色等越权入口)
+  if (role.kind === 'manager') return null
 
   return (
     <div

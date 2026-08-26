@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AssistantMessage, UserMessage } from '@earendil-works/pi-ai'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionRepository } from '../../../src/main/storage/session-repository'
 import { SessionService } from '../../../src/main/storage/session-service'
 import { createRoleFixture, type RoleFixture } from '../helpers/role-fixture'
@@ -107,6 +107,31 @@ describe('SessionRepository + SessionService(真实 SQLite)', () => {
     expect(await service.listSummaries()).toHaveLength(0)
 
     await repo.close()
+  })
+
+  it('并发 openPiSession 走 single-flight:底层只 open 一次且拿到同一实例(复核残余点)', async () => {
+    const repo = new SessionRepository(join(dir, 'data', 'sessions.sqlite'))
+    const service = new SessionService(repo, roleFx.roleRepository, roleFx.roleService)
+    const created = await service.create({ roleId: roleFx.roleId, providerId: 'kimi-coding', modelId: 'm' })
+    let openCount = 0
+    const originalOpen = repo.open.bind(repo)
+    const spied = vi.spyOn(repo, 'open').mockImplementation(async (meta) => {
+      openCount += 1
+      // 放大竞态窗口:第一个 open 未返回时第二个调用就进来
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return originalOpen(meta)
+    })
+    try {
+      const [a, b] = await Promise.all([
+        service.openPiSession(created.summary.id),
+        service.openPiSession(created.summary.id),
+      ])
+      expect(a).toBe(b)
+      expect(openCount).toBe(1)
+    } finally {
+      spied.mockRestore()
+      await repo.close()
+    }
   })
 
   it('多会话排序:最近更新的在前', async () => {

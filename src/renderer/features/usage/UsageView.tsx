@@ -7,6 +7,7 @@ import { TokenHeatmap } from './TokenHeatmap'
 import { TokenTrendChart } from './TokenTrendChart'
 import { ModelDonutChart } from './ModelDonutChart'
 import { modelColorMap } from './usage-geometry'
+import { formatTokens } from './usage-format'
 
 interface UsageViewProps {
   readonly bridge: DaweigeBridge
@@ -34,6 +35,54 @@ export interface RequestGate {
   readonly begin: () => number
   /** 该代次的响应是否允许落地(组件在挂载且代次最新)。 */
   readonly accept: (generation: number) => boolean
+}
+
+/**
+ * 派活用量折叠区(0.3.0 批 2b,PLAN §9.3):既有总量的解释维度,不是第五份计费口径。
+ * 默认折叠,不挤现有四区;展开后按 run 显示目标角色名/任务简报(一行截断)/轮次/总 token,
+ * 头部给小计 totalTokens。runs 为空时整区不渲染(由调用处判断,不加空状态文案)。
+ */
+function DelegationUsageSection({
+  delegations,
+}: {
+  readonly delegations: UsageDashboard['delegations']
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <section className="usage-section usage-delegations">
+      <div className="usage-section-head">
+        <h3 className="usage-section-title">派活用量</h3>
+        <div className="usage-delegations-head-right">
+          <span className="usage-delegations-subtotal muted">
+            小计 {formatTokens(delegations.totalTokens)} tokens
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? '收起' : '展开'}
+          </button>
+        </div>
+      </div>
+      {open && (
+        <ul className="usage-delegation-list">
+          {delegations.runs.map((run) => (
+            <li key={run.runId} className="usage-delegation-row">
+              <span className="usage-delegation-name">{run.targetRoleName}</span>
+              <span className="usage-delegation-brief" title={run.taskBrief}>
+                {run.taskBrief}
+              </span>
+              <span className="usage-delegation-meta muted">
+                轮次 {run.usage.rounds} · {formatTokens(run.usage.totalTokens)} tokens
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
 }
 
 export function createRequestGate(): RequestGate {
@@ -165,6 +214,10 @@ export function UsageView({ bridge, onBack }: UsageViewProps) {
             <TokenHeatmap activity={dashboard.activity} />
             <TokenTrendChart trend={dashboard.trend} colorMap={colorMap} />
             <ModelDonutChart models={dashboard.models} colorMap={colorMap} />
+            {/* 派活用量(批 2b,PLAN §9.3):runs 为空整区隐藏,不加空状态文案 */}
+            {dashboard.delegations.runs.length > 0 && (
+              <DelegationUsageSection delegations={dashboard.delegations} />
+            )}
             <div className="usage-foot muted">
               数据更新于 {new Date(dashboard.generatedAt).toLocaleString('zh-CN')} ·
               时区 {dashboard.timeZone} · 仅本地统计,不上传

@@ -8,12 +8,17 @@ import type {
   RoleSummary,
   RoleTemplateId,
 } from '../../shared/domain'
-import type {
-  RoleMountRow,
-  RoleRepository,
-  RoleRow,
-  RoleSessionCounts,
+import {
+  RoleAgentRunBusyError,
+  type RoleRepository,
+  type RoleMountRow,
+  type RoleRow,
+  type RoleSessionCounts,
 } from './role-repository'
+import {
+  ManagerCleanupBusyError,
+  type ManagerCleanupService,
+} from '../manager/manager-cleanup-service'
 import {
   buildProfile,
   getTemplateDef,
@@ -82,12 +87,18 @@ export interface CreateRoleInput {
 }
 
 export class RoleService {
+  private managerCleanup: ManagerCleanupService | undefined
+
   constructor(
     private readonly userDataPath: string,
     private readonly repository: RoleRepository,
     /** 删除影响清单需要读 pi 会话标题;只在 getDeleteImpact/delete 使用(只读)。 */
     private readonly sessionRepository?: SessionRepository,
   ) {}
+
+  setManagerCleanup(service: ManagerCleanupService): void {
+    this.managerCleanup = service
+  }
 
   // ---------- 读路径 ----------
 
@@ -283,7 +294,7 @@ export class RoleService {
       )
     }
     const home = roleHomePath(this.userDataPath, roleId)
-    // codex 复审 B-01:读原文+文件替换+条件递增+失败恢复,全在同一队列槽内原子执行——
+    // 复审 B-01:读原文+文件替换+条件递增+失败恢复,全在同一队列槽内原子执行——
     // "原文"在槽内读取(不受并发方写入干扰),最终落盘内容恒等于版本胜出方
     const bumped = await this.repository.runGuardrailsUpdate(
       roleId,
@@ -310,7 +321,18 @@ export class RoleService {
     if (!isValidRoleId(roleId)) throw new RoleError('ROLE_ID_INVALID', '非法角色 ID')
     const row = await this.repository.getRoleRow(roleId)
     if (!row) throw new RoleError('ROLE_NOT_FOUND', '角色不存在或已被删除')
-    await this.repository.setRoleArchived(roleId, archived ? Date.now() : null, Date.now())
+    if (archived) {
+      try {
+        const at = Date.now()
+        await this.repository.archiveRoleIfIdle(roleId, at, at)
+      } catch (error) {
+        if (error instanceof RoleAgentRunBusyError) throw new ManagerCleanupBusyError(error.message)
+        throw error
+      }
+      await this.managerCleanup?.cleanupTargetRole(roleId)
+    } else {
+      await this.repository.setRoleArchived(roleId, null, Date.now())
+    }
     return this.getSummary(roleId)
   }
 
@@ -373,7 +395,10 @@ export class RoleService {
         '角色的信息刚发生过变化,影响清单已刷新;请重新确认后再删',
       )
     }
-    const sessionIds = await this.listSessionIdsOfRole(roleId)
+    await this.managerCleanup?.assertTargetRoleIdle(roleId)
+    const userSessionIds = await this.listSessionIdsOfRole(roleId)
+    const internalSessionIds = await this.managerCleanup?.internalSessionIdsForRole(roleId) ?? []
+    const sessionIds = [...new Set([...userSessionIds, ...internalSessionIds])]
     return this.executeDeletion(roleId, sessionIds, hooks)
   }
 
@@ -384,7 +409,7 @@ export class RoleService {
     const results: RoleDeleteResult[] = []
     for (const job of jobs) {
       try {
-        const remaining = await this.listSessionIdsOfRole(job.roleId)
+        const remaining = job.pendingSessionIds
         results.push(await this.executeDeletion(job.roleId, remaining, hooks))
       } catch (err) {
         console.error(
@@ -403,7 +428,7 @@ export class RoleService {
   ): Promise<RoleDeleteResult> {
     const deletedSessionIds: string[] = []
     try {
-      // codex 复审 B-03:lifecycle=deleting 与 job 首记同事务——
+      // 复审 B-03:lifecycle=deleting 与 job 首记同事务——
       // 两步之间退出不再产生"deleting 但无 job"的永不续跑状态
       await this.repository.beginDeletionTransaction(roleId, 'confirmed', sessionIds)
       // 中断所有子会话 agent、拒绝收尾其待确认卡
@@ -430,6 +455,9 @@ export class RoleService {
       await this.repository.deleteRoleRow(roleId)
       return { deletedRoleId: roleId, deletedSessionIds }
     } catch (err) {
+      if (err instanceof RoleAgentRunBusyError) {
+        throw new ManagerCleanupBusyError(err.message)
+      }
       await this.repository.setRoleLifecycle(roleId, 'delete_failed', Date.now()).catch(() => {})
       await this.repository
         .upsertDeletionJob({

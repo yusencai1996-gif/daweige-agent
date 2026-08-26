@@ -32,8 +32,8 @@ describe('IPC 契约:通道冻结', () => {
     for (const ch of INVOKE_CHANNELS) {
       expect(isInvokeChannel(ch), `通道 ${ch} 不在清单中`).toBe(true)
     }
-    expect(INVOKE_CHANNELS).toHaveLength(40)
-    expect(new Set(INVOKE_CHANNELS).size).toBe(40)
+    expect(INVOKE_CHANNELS).toHaveLength(42)
+    expect(new Set(INVOKE_CHANNELS).size).toBe(42)
   })
 
   it('request 非 void 的通道必须注册运行时 schema(0.2.1 热修教训:漏注册→"不接受任何参数")', () => {
@@ -75,6 +75,38 @@ describe('IPC 契约:入参运行时校验', () => {
       modelId: 'kimi-for-coding',
     })
     expect(r.ok).toBe(true)
+  })
+
+  it('session:create 接受内置总管字面量,拒绝其他 sys-*(0.3.0)', () => {
+    expect(
+      validateRequest('session:create', {
+        roleId: 'sys-xiaozhen',
+        providerId: 'kimi-coding',
+        modelId: 'kimi-for-coding',
+      }).ok,
+    ).toBe(true)
+    for (const roleId of ['sys-evil', 'sys-xiaozhen-fake', 'SYS-XIAOZHEN']) {
+      const r = validateRequest('session:create', {
+        roleId,
+        providerId: 'kimi-coding',
+        modelId: 'kimi-for-coding',
+      })
+      expect(r.ok, `roleId ${roleId} 应被拒绝`).toBe(false)
+    }
+  })
+
+  it('agentRun 通道:合法 runId/managerSessionId 通过,伪造形态被拒(0.3.0)', () => {
+    expect(
+      validateRequest('agentRun:list', { managerSessionId: 'demo-session-manager' }).ok,
+    ).toBe(true)
+    expect(
+      validateRequest('agentRun:getDetail', { runId: 'run-a1b2c3d4e5f60718' }).ok,
+    ).toBe(true)
+    for (const runId of ['run-ABC', 'run-a1b2c3d4e5f6071', 'run-a1b2c3d4e5f607188', 'agent-a1b2c3d4e5f6', '']) {
+      const r = validateRequest('agentRun:getDetail', { runId })
+      expect(r.ok, `runId ${runId} 应被拒绝`).toBe(false)
+    }
+    expect(validateRequest('agentRun:list', {}).ok).toBe(false)
   })
 
   it('相对路径 workspacePath 被拒(role:create)', () => {

@@ -53,12 +53,18 @@ export type AgentPushEvent =
       readonly type: 'approval_required'
       readonly sessionId: string
       readonly request: ApprovalRequest
+      /**
+       * 卡片显示在哪个用户会话(0.3.0):子 agent 的文件卡 sessionId=internal(授权归属),
+       * surfaceSessionId=manager 用户会话(展示位置)。普通会话缺省,等价于 sessionId。
+       */
+      readonly surfaceSessionId?: string
     }
   | {
       readonly type: 'approval_resolved'
       readonly sessionId: string
       readonly approvalId: string
       readonly decision: 'approve' | 'reject'
+      readonly surfaceSessionId?: string
     }
   | {
       readonly type: 'agent_error'
@@ -80,6 +86,12 @@ export type AgentPushEvent =
       /** usage 行成功提交后推送(使用统计页防抖刷新;未打开页面无需响应)。 */
       readonly type: 'usage_updated'
       readonly generatedAt: number
+    }
+  | {
+      /** 派活状态/用量变化(0.3.0):总管会话的派活卡数据源。 */
+      readonly type: 'agent_run_updated'
+      readonly managerSessionId: string
+      readonly run: import('../domain/manager').AgentRunSummary
     }
 
 export type AgentEventType = AgentPushEvent['type']

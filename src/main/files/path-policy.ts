@@ -20,6 +20,19 @@ export interface PathCheckResult {
   realPath: string
 }
 
+export interface DelegationPathViolation {
+  /** 已解开 Junction/symlink、并补回待创建尾段的规范路径。 */
+  readonly path: string
+  readonly toolName: string
+  readonly operation: 'read' | 'write'
+  readonly occurredAt: number
+  readonly reason: string
+}
+
+export type DelegationViolationReporter = (
+  violation: DelegationPathViolation,
+) => void | Promise<void>
+
 export class PathPolicyError extends Error {
   constructor(
     public readonly reason:
@@ -37,21 +50,21 @@ export class PathPolicyError extends Error {
 const WRITE_FORBIDDEN = /[\x00-\x1f<>:"|?*]/
 
 export class PathPolicy {
-  private readonly workspaceReal: Promise<string>
-  private readonly appDataReal: Promise<string>
+  protected readonly workspaceReal: Promise<string>
+  protected readonly appDataReal: Promise<string>
 
   constructor(
     workspacePath: string,
     userDataPath: string,
   ) {
-    this.workspaceReal = this.realOfExisting(workspacePath, '工作文件夹')
-    this.appDataReal = this.realOfExisting(userDataPath, '应用数据目录')
+    this.workspaceReal = realOfExisting(workspacePath, '工作文件夹')
+    this.appDataReal = realOfExisting(userDataPath, '应用数据目录')
   }
 
   /** 判定目标路径所在区域。对不存在的目标取最近现存父目录的真实路径。 */
   async classify(targetPath: string): Promise<PathCheckResult> {
-    const abs = this.toAbsolute(targetPath)
-    const real = await this.realWithMissingTail(abs)
+    const abs = toAbsolute(targetPath)
+    const real = await realWithMissingTail(abs)
     const workspace = await this.workspaceReal
     const appData = await this.appDataReal
 
@@ -66,7 +79,7 @@ export class PathPolicy {
 
   /** 写操作目标的额外校验:禁通配符/保留字符(尾段文件名也查)。 */
   assertWritable(targetPath: string): void {
-    const abs = this.toAbsolute(targetPath)
+    const abs = toAbsolute(targetPath)
     const tail = abs.split(/[\\/]/).pop() ?? ''
     if (WRITE_FORBIDDEN.test(tail)) {
       throw new PathPolicyError(
@@ -76,36 +89,184 @@ export class PathPolicy {
     }
   }
 
-  private toAbsolute(p: string): string {
-    if (!isAbsolute(p)) {
-      throw new PathPolicyError('not_absolute', `只允许绝对路径:${p}`)
+}
+
+/**
+ * delegated child 专用严格路径域。它与普通 PathPolicy 分类,
+ * 避免调用方漏传 mode 时意外放宽安全边界。
+ */
+export class StrictDelegationPathPolicy extends PathPolicy {
+  readonly strictDelegation = true
+  /** spawn 批准时已经 realpath 过的快照；绝不能用执行时的新 realpath 替换授权事实。 */
+  private readonly approvedRoots: readonly string[]
+
+  constructor(
+    workspacePaths: readonly string[],
+    userDataPath: string,
+    private readonly reportViolation?: DelegationViolationReporter,
+  ) {
+    if (workspacePaths.length === 0) {
+      throw new PathPolicyError('not_found', '派活允许路径不能为空')
     }
-    return resolve(p)
+    super(workspacePaths[0]!, userDataPath)
+    this.approvedRoots = workspacePaths.map((path) => toAbsolute(path))
   }
 
-  private async realOfExisting(p: string, label: string): Promise<string> {
+  override async classify(targetPath: string): Promise<PathCheckResult> {
+    const roots = await this.validatedRoots()
+    return this.classifyWithRoots(targetPath, roots)
+  }
+
+  private async classifyWithRoots(
+    targetPath: string,
+    roots: readonly string[],
+  ): Promise<PathCheckResult> {
+    const real = await realWithMissingTail(toAbsolute(targetPath))
+    const appData = await this.appDataReal
+    if (isInside(real, appData)) return { zone: 'app-internal', realPath: real }
+    if (roots.some((root) => isInside(real, root))) {
+      return { zone: 'workspace', realPath: real }
+    }
+    return { zone: 'outside', realPath: real }
+  }
+
+  /**
+   * 全量预检一次完成;有一项越界则返回同一个 block reason,
+   * 并为每个越界项记录主进程权威 violation。
+   */
+  async preflight(
+    paths: readonly string[],
+    toolName: string,
+    operation: 'read' | 'write',
+  ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+    let roots: readonly string[]
     try {
-      return await fs.realpath(p)
-    } catch {
-      throw new PathPolicyError('not_found', `${label}不存在:${p}`)
+      // 一次批量预检只核对每个 root 一次，避免 paths × roots 的重复 IO。
+      roots = await this.validatedRoots()
+    } catch (error) {
+      const reason = rootInvalidMessage(error)
+      for (const attempted of paths) {
+        await this.reportViolation?.({
+          path: safeCanonicalAttempt(attempted),
+          toolName,
+          operation,
+          occurredAt: Date.now(),
+          reason,
+        })
+      }
+      return { allowed: false, reason }
+    }
+    const checks = await Promise.all(
+      paths.map(async (attempted) => {
+        try {
+          const result = await this.classifyWithRoots(attempted, roots)
+          return { attempted, ...result }
+        } catch (error) {
+          return { attempted, error }
+        }
+      }),
+    )
+    const blocked = checks.filter(
+      (item) => 'error' in item || ('zone' in item && item.zone !== 'workspace'),
+    )
+    if (blocked.length === 0) return { allowed: true }
+
+    for (const item of blocked) {
+      const canonical =
+        'realPath' in item && typeof item.realPath === 'string'
+          ? item.realPath
+          : safeCanonicalAttempt(item.attempted)
+      const reason =
+        'zone' in item && item.zone === 'app-internal'
+          ? '派活子角色不允许访问应用内部数据'
+          : '路径不在本次派活允许的文件夹内'
+      await this.reportViolation?.({
+        path: canonical,
+        toolName,
+        operation,
+        occurredAt: Date.now(),
+        reason,
+      })
+    }
+    return {
+      allowed: false,
+      reason: `已阻止 ${toolName}:有 ${blocked.length} 个路径超出本次派活允许范围`,
     }
   }
 
-  /** 现存路径直接 realpath;不存在的沿父目录找最近现存,拼回剩余段。 */
-  private async realWithMissingTail(p: string): Promise<string> {
-    try {
-      return await fs.realpath(p)
-    } catch {
-      // 不存在:父目录逐级上找
+  private async validatedRoots(): Promise<readonly string[]> {
+    const current = await Promise.all(
+      this.approvedRoots.map(async (approved) => {
+        try {
+          return await fs.realpath(approved)
+        } catch {
+          throw new PathPolicyError(
+            'not_found',
+            '允许的文件夹在批准后被移动或替换,为安全起见这次不执行',
+          )
+        }
+      }),
+    )
+    if (current.some((root, index) => normalize(root) !== normalize(this.approvedRoots[index]!))) {
+      throw new PathPolicyError(
+        'fs_error',
+        '允许的文件夹在批准后被移动或替换,为安全起见这次不执行',
+      )
     }
-    const parent = dirname(p)
-    if (parent === p) {
-      throw new PathPolicyError('not_found', `路径不可达:${p}`)
-    }
-    const parentReal = await this.realWithMissingTail(parent)
-    const tail = p.slice(parent.length).replace(/^[\\/]+/, '')
-    return join(parentReal, tail)
+    return this.approvedRoots
   }
+}
+
+export function isStrictDelegationPathPolicy(
+  policy: PathPolicy,
+): policy is StrictDelegationPathPolicy {
+  return policy instanceof StrictDelegationPathPolicy
+}
+
+function toAbsolute(p: string): string {
+  if (!isAbsolute(p)) {
+    throw new PathPolicyError('not_absolute', `只允许绝对路径:${p}`)
+  }
+  return resolve(p)
+}
+
+async function realOfExisting(p: string, label: string): Promise<string> {
+  try {
+    return await fs.realpath(toAbsolute(p))
+  } catch {
+    throw new PathPolicyError('not_found', `${label}不存在:${p}`)
+  }
+}
+
+/** 现存路径直接 realpath;不存在的沿父目录找最近现存,拼回剩余段。 */
+async function realWithMissingTail(p: string): Promise<string> {
+  try {
+    return await fs.realpath(p)
+  } catch {
+    // 不存在:父目录逐级上找
+  }
+  const parent = dirname(p)
+  if (parent === p) {
+    throw new PathPolicyError('not_found', `路径不可达:${p}`)
+  }
+  const parentReal = await realWithMissingTail(parent)
+  const tail = p.slice(parent.length).replace(/^[\\/]+/, '')
+  return join(parentReal, tail)
+}
+
+function safeCanonicalAttempt(path: string): string {
+  try {
+    return toAbsolute(path)
+  } catch {
+    return path
+  }
+}
+
+function rootInvalidMessage(error: unknown): string {
+  return error instanceof PathPolicyError &&
+    error.message === '允许的文件夹在批准后被移动或替换,为安全起见这次不执行'
+    ? error.message
+    : '允许的文件夹在批准后被移动或替换,为安全起见这次不执行'
 }
 
 /** 大小写不敏感 + 分隔符边界的包含判断。realPath/parent 均为已规范化的真实路径。 */

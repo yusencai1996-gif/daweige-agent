@@ -93,6 +93,33 @@ async function waitFor(cond: () => boolean, timeoutMs = 8000): Promise<void> {
 }
 
 describe('AgentService(faux 流式)', () => {
+  it('AgentTurnRunner 可 await 终态,且复用既有事件流与持久化', async () => {
+    const ctx = await setup([fauxAssistantMessage('可等待 runner 回复')])
+    const sid = await createSession(ctx)
+
+    const result = await ctx.agentService.run({
+      sessionId: sid,
+      text: '执行 internal turn',
+      selection: ctx.selection,
+      updateTitle: false,
+    })
+    expect(result).toMatchObject({
+      sessionId: sid,
+      status: 'completed',
+      finalText: '可等待 runner 回复',
+    })
+    const types = events.map((event) => event.type)
+    expect(types).toContain('message_start')
+    expect(types).toContain('message_end')
+    expect(types.at(-1)).toBe('agent_end')
+    const restored = await ctx.agentService.restoreChatMessages(sid)
+    expect(restored.filter((message) => message.role === 'user')).toHaveLength(1)
+    expect(restored.filter((message) => message.role === 'assistant')).toHaveLength(1)
+    const summaries = await ctx.sessionService.listSummaries()
+    expect(summaries.find((summary) => summary.id === sid)?.title).toBe('新会话')
+    await ctx.repo.close()
+  })
+
   it('发送 → 流式事件序列 → 持久化 → 恢复不重复', async () => {
     const ctx = await setup([fauxAssistantMessage('好的,我来处理这件事。')])
     const sid = await createSession(ctx)
@@ -261,7 +288,7 @@ describe('AgentService(使用统计挂钩)', () => {
     expect(dashboard.hasData).toBe(true)
     expect(dashboard.overview.totalTokens).toBeGreaterThan(0)
 
-    // 回填幂等:全新 service/store 重跑同一会话库,总量不翻倍(codex 复审测试缺口)
+    // 回填幂等:全新 service/store 重跑同一会话库,总量不翻倍(复审测试缺口)
     const usageStore2 = new UsageStore(join(dir, 'usage.sqlite'))
     const usageService2 = new UsageService(usageStore2, {
       emitEvent: () => {},
@@ -277,7 +304,7 @@ describe('AgentService(使用统计挂钩)', () => {
     await repo2.close()
   })
 
-  it('回填遇坏行只丢自己,不阻断后续行(codex 复审 B-02)', async () => {
+  it('回填遇坏行只丢自己,不阻断后续行(复审 B-02)', async () => {
     const store = new UsageStore(join(dir, 'usage.sqlite'))
     const at = Date.UTC(2026, 7, 24, 2)
     const poison = {

@@ -3,7 +3,10 @@ import type {
   ApprovalKind,
   ApprovalRequest,
   ApprovalResponse,
+  DelegationApprovalRequest,
+  FileApprovalRequest,
 } from '../../shared/domain/approval'
+import type { AgentRunId } from '../../shared/domain/manager'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 
 /**
@@ -13,13 +16,17 @@ import type { AgentPushEvent } from '../../shared/ipc/events'
  * 2. 挂起等待 approval:respond;
  * 3. 批准 → 调用方放行;拒绝 → 附言非空时作为 block reason 回传模型;
  * 4. 超时 / 会话 abort / 窗口关闭 → 统一按拒绝收尾,绝不"默认放行"。
+ * (0.3.0 后端线将在此扩展 delegation 请求与 surface 归属,契约见 PLAN §6.3)
  */
 
 export const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 
 export interface ApprovalInput {
   sessionId: string
-  kind: ApprovalKind
+  /** 卡片展示归属;child 传 manager user session,普通会话不传。 */
+  surfaceSessionId?: string
+  /** 文件/守则类卡片;delegation(0.3.0)由 orchestrator 专用入口发起,不走本结构。 */
+  kind: Exclude<ApprovalKind, 'delegation'>
   title: string
   description: string
   itemCount: number
@@ -30,6 +37,20 @@ export interface ApprovalInput {
   toolName?: string
 }
 
+export interface DelegationApprovalInput {
+  /** 授权 owner,必须是发起派活的 manager 用户会话。 */
+  sessionId: string
+  surfaceSessionId?: string
+  runId: AgentRunId
+  targetRoleId: string
+  targetRoleName: string
+  taskBrief: string
+  allowedWorkspacePaths: readonly string[]
+  acceptanceCriteria: readonly string[]
+  title: string
+  description: string
+}
+
 export type ApprovalOutcome =
   | { decision: 'approve' }
   | { decision: 'reject'; note?: string; timedOut?: boolean }
@@ -37,6 +58,7 @@ export type ApprovalOutcome =
 interface PendingApproval {
   request: ApprovalRequest
   sessionId: string
+  surfaceSessionId?: string
   settle: (outcome: ApprovalOutcome) => void
   timer: ReturnType<typeof setTimeout>
 }
@@ -66,7 +88,7 @@ export class ApprovalBroker {
 
   /** 挂起等待用户确认。调用方(beforeToolCall)据此决定放行或阻止。 */
   async request(input: ApprovalInput): Promise<ApprovalOutcome> {
-    const request: ApprovalRequest = {
+    const request: FileApprovalRequest = {
       id: randomUUID(),
       kind: input.kind,
       title: input.title,
@@ -80,17 +102,44 @@ export class ApprovalBroker {
       createdAt: Date.now(),
     }
 
+    return this.enqueueRequest(request, input.sessionId, input.surfaceSessionId)
+  }
+
+  /** 总管派活专用入口;仍复用同一套超时/abort/close fail-closed 生命周期。 */
+  async requestDelegation(input: DelegationApprovalInput): Promise<ApprovalOutcome> {
+    const request: DelegationApprovalRequest = {
+      id: randomUUID(),
+      kind: 'delegation',
+      runId: input.runId,
+      targetRoleId: input.targetRoleId,
+      targetRoleName: input.targetRoleName,
+      taskBrief: input.taskBrief,
+      allowedWorkspacePaths: [...input.allowedWorkspacePaths],
+      acceptanceCriteria: [...input.acceptanceCriteria],
+      title: input.title,
+      description: input.description,
+      createdAt: Date.now(),
+    }
+    return this.enqueueRequest(request, input.sessionId, input.surfaceSessionId)
+  }
+
+  private enqueueRequest(
+    request: ApprovalRequest,
+    sessionId: string,
+    surfaceSessionId?: string,
+  ): Promise<ApprovalOutcome> {
     const promise = new Promise<ApprovalOutcome>((settle) => {
       const timer = setTimeout(() => {
         // 超时按拒绝收尾,绝不默认放行
         this.pending.delete(request.id)
-        this.emitResolved(input.sessionId, request.id, 'reject')
+        this.emitResolved(sessionId, request.id, 'reject', surfaceSessionId)
         settle({ decision: 'reject', note: '等待确认超时,本次未执行', timedOut: true })
       }, APPROVAL_TIMEOUT_MS)
 
       this.pending.set(request.id, {
         request,
-        sessionId: input.sessionId,
+        sessionId,
+        ...(surfaceSessionId !== undefined ? { surfaceSessionId } : {}),
         settle: (outcome) => {
           clearTimeout(timer)
           settle(outcome)
@@ -99,7 +148,12 @@ export class ApprovalBroker {
       })
     })
 
-    this.safeEmit({ type: 'approval_required', sessionId: input.sessionId, request })
+    this.safeEmit({
+      type: 'approval_required',
+      sessionId,
+      request,
+      ...(surfaceSessionId !== undefined ? { surfaceSessionId } : {}),
+    })
     return promise
   }
 
@@ -111,7 +165,12 @@ export class ApprovalBroker {
     }
     this.pending.delete(response.approvalId)
     const settledDecision = response.decision === 'reject' ? 'reject' : 'approve'
-    this.emitResolved(pending.sessionId, response.approvalId, settledDecision)
+    this.emitResolved(
+      pending.sessionId,
+      response.approvalId,
+      settledDecision,
+      pending.surfaceSessionId,
+    )
     if (response.decision === 'reject') {
       const note = response.note?.trim()
       pending.settle(note ? { decision: 'reject', note } : { decision: 'reject' })
@@ -121,19 +180,21 @@ export class ApprovalBroker {
       // 登记会话级授权;无工具名时退化为单次批准。
       // 删除/越界/守则修改不吃会话授权(gate 消费侧也硬排除,此处双保险);
       // 守则工具即便登记也无消费路径,但源头不登记更干净(0.2.0 红线)。
-      const toolName = pending.request.toolName
+      // delegation(0.3.0)同样永不登记:每次派活都必须用户点头。
+      const req = pending.request
       if (
-        toolName &&
-        pending.request.kind !== 'delete' &&
-        pending.request.kind !== 'role-rules-edit' &&
-        !pending.request.outsideWorkspace
+        req.kind !== 'delegation' &&
+        req.toolName &&
+        req.kind !== 'delete' &&
+        req.kind !== 'role-rules-edit' &&
+        !req.outsideWorkspace
       ) {
         let grants = this.sessionGrants.get(pending.sessionId)
         if (!grants) {
           grants = new Set<string>()
           this.sessionGrants.set(pending.sessionId, grants)
         }
-        grants.add(toolName)
+        grants.add(req.toolName)
       }
     }
     pending.settle({ decision: 'approve' })
@@ -153,7 +214,7 @@ export class ApprovalBroker {
       if (pending.sessionId === sessionId) {
         this.pending.delete(id)
         clearTimeout(pending.timer)
-        this.emitResolved(sessionId, id, 'reject')
+        this.emitResolved(sessionId, id, 'reject', pending.surfaceSessionId)
         pending.settle({ decision: 'reject', note: reason })
       }
     }
@@ -164,7 +225,7 @@ export class ApprovalBroker {
     for (const [id, pending] of this.pending) {
       this.pending.delete(id)
       clearTimeout(pending.timer)
-      this.emitResolved(pending.sessionId, id, 'reject')
+      this.emitResolved(pending.sessionId, id, 'reject', pending.surfaceSessionId)
       pending.settle({ decision: 'reject', note: reason })
     }
   }
@@ -177,12 +238,14 @@ export class ApprovalBroker {
     sessionId: string,
     approvalId: string,
     decision: 'approve' | 'reject',
+    surfaceSessionId?: string,
   ): void {
     const event: AgentPushEvent = {
       type: 'approval_resolved',
       sessionId,
       approvalId,
       decision,
+      ...(surfaceSessionId !== undefined ? { surfaceSessionId } : {}),
     }
     this.safeEmit(event)
   }

@@ -1,7 +1,7 @@
 import { registerHandler, ipcError } from './handler'
 import { AgentBusyError, ModelNotReadyError, type AgentService } from '../agent/agent-service'
 import { PromptComposerError } from '../agent/prompt-composer'
-import { SessionCreateError } from '../storage/session-service'
+import { InternalSessionAccessError, SessionCreateError } from '../storage/session-service'
 import type { SettingsStore } from '../storage/settings-store'
 import { SessionNotFoundError } from '../storage/session-service'
 import type { ApprovalBroker } from '../agent/approval-broker'
@@ -22,6 +22,7 @@ export function registerMessageHandlers(
   registerHandler('message:send', async ({ sessionId, text }) => {
     // 已归档会话兜底拦截(前端已禁输入;万一绕过也不让继续聊,批3初审整改)
     try {
+      await sessionService?.assertUserVisibleSession(sessionId)
       await sessionService?.assertSessionNotArchived(sessionId)
     } catch (err) {
       throw mapAgentError(err)
@@ -43,6 +44,11 @@ export function registerMessageHandlers(
   })
 
   registerHandler('message:abort', async ({ sessionId }) => {
+    try {
+      await sessionService?.assertUserVisibleSession(sessionId)
+    } catch (err) {
+      throw mapAgentError(err)
+    }
     agentService.abort(sessionId)
     // 用户点了停止:该会话挂起的确认卡一并按拒绝收尾,不留 5 分钟死等
     approvalBroker?.abortAllForSession(sessionId, '已停止,本次未执行')
@@ -63,6 +69,9 @@ function mapAgentError(err: unknown): unknown {
     return ipcError('ESESSION_NOT_FOUND', '会话不存在或已被删除')
   }
   if (err instanceof SessionCreateError) {
+    return ipcError('EINVALID_REQUEST', err.message)
+  }
+  if (err instanceof InternalSessionAccessError) {
     return ipcError('EINVALID_REQUEST', err.message)
   }
   if (err instanceof PromptComposerError) {

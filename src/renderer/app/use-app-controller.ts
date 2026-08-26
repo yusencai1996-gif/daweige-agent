@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  AgentRunDetail,
+  AgentRunSummary,
   ApprovalDecision,
-  ApprovalRequest,
+  DelegationApprovalRequest,
+  FileApprovalRequest,
   ChatMessage,
   CredentialStatus,
   ProviderId,
@@ -21,16 +24,21 @@ import type { UpdateState } from '../../shared/domain/update'
 import { isIpcErrorPayload, type IpcErrorCode } from '../../shared/ipc/errors'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 import type { DaweigeBridge } from '../../shared/ipc/bridge'
+import { SYSTEM_MANAGER_ROLE_ID } from '../../shared/domain/manager'
 import { resolveActiveRoleName } from './active-role-name'
 import { withProviderSelection } from '../features/settings/model-options'
+import type { DelegationCardActions } from '../features/manager/DelegationCard'
 
 /** 确认卡片阶段:pending(等用户)→ running(执行中…)→ succeeded/rejected/failed。 */
 export type ApprovalPhase = 'pending' | 'running' | 'succeeded' | 'rejected' | 'failed'
 
 export interface ApprovalCardState {
-  /** 归属会话(切换会话再切回,等待中的卡片不丢)。 */
+  /** 归属会话(授权/响应按它走;切换会话再切回,等待中的卡片不丢)。 */
   readonly sessionId: string
-  readonly request: ApprovalRequest
+  /** 展示会话(0.3.0,PLAN §10.4):child 的文件卡 sessionId=internal,surfaceSessionId=manager 用户会话;普通会话与 sessionId 相同。 */
+  readonly surfaceSessionId: string
+  /** 文件/守则卡;delegation(0.3.0)不入此列表(由派活卡渲染)。 */
+  readonly request: FileApprovalRequest
   readonly phase: ApprovalPhase
   /** 已发过 approval:respond(重复点击只发送一次的守卫)。 */
   readonly responded: boolean
@@ -40,7 +48,7 @@ export interface ApprovalCardState {
   readonly error?: string
 }
 
-export type ViewMode = 'chat' | 'role-rules' | 'archive' | 'usage' | 'settings'
+export type ViewMode = 'chat' | 'role-rules' | 'archive' | 'usage' | 'settings' | 'agent-run-detail'
 
 /** role:create 的入参(契约类型);0.2.0 UI 只提交一个文件夹。 */
 export type CreateRoleInput = RequestOf<'role:create'>
@@ -90,7 +98,9 @@ export interface AppController {
   readonly expandedRoleId: string | null
   readonly setExpandedRoleId: (roleId: string | null) => void
   readonly wizardOpen: boolean
-  readonly openWizard: () => void
+  /** 守则草稿卡(批 2b):「用这个草稿建角色」带进向导的预填;普通「新建角色」为 null。 */
+  readonly wizardPrefill: { readonly displayName: string; readonly guardrails: string } | null
+  readonly openWizard: (prefill?: { readonly displayName: string; readonly guardrails: string }) => void
   readonly closeWizard: () => void
   readonly createRole: (input: CreateRoleInput) => Promise<{ readonly ok: boolean; readonly message?: string }>
   readonly renameRole: (roleId: string, displayName: string) => Promise<boolean>
@@ -110,7 +120,12 @@ export interface AppController {
   readonly rulesRoleId: string | null
   readonly rulesDetail: RoleDetail | null
   readonly rulesLoading: boolean
-  readonly openRoleRules: (roleId: string) => Promise<void>
+  /**
+   * 守则草稿预填(批 2b,PLAN §10.5):草稿卡「过目并保存」只把草稿本地预填进编辑页,
+   * 用户亲手点保存才发 role:updateGuardrails;普通「编辑守则」恒为 null。
+   */
+  readonly rulesPrefill: string | null
+  readonly openRoleRules: (roleId: string, prefillGuardrails?: string) => Promise<void>
   readonly closeRoleRules: () => void
   readonly saveGuardrails: (guardrails: string) => Promise<SaveGuardrailsResult>
   readonly openArchive: () => void
@@ -144,6 +159,21 @@ export interface AppController {
     decision: ApprovalDecision,
     note: string,
   ) => Promise<void>
+  // 派活卡(0.3.0,PLAN §10.2):当前打开的 manager 用户会话名下的 run 列表(其他会话恒空)
+  readonly agentRuns: readonly AgentRunSummary[]
+  /** 派活卡动作合集(确认响应/详情懒加载),稳定引用,直接透传到 DelegationCard。 */
+  readonly delegation: DelegationCardActions
+  /**
+   * internal 只读详情整页(批 2b,PLAN §10.3):非 null 即 ViewMode='agent-run-detail'。
+   * run 优先取列表里的活体(状态实时),列表里找不到(角色被删等)退回打开时的快照。
+   */
+  readonly runDetailView: {
+    readonly run: AgentRunSummary
+    readonly detail: AgentRunDetail | undefined
+    readonly loading: boolean
+  } | null
+  readonly openAgentRunDetail: (runId: string) => void
+  readonly closeAgentRunDetail: () => void
   // 设置与凭据
   readonly settings: Settings | null
   readonly selectProvider: (selection: ProviderSelection) => Promise<void>
@@ -273,6 +303,17 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   /** 全部确认卡(按会话归属);展示时按当前会话过滤,切走再切回不丢。 */
   const [allApprovals, setAllApprovals] = useState<readonly ApprovalCardState[]>([])
 
+  /* ---- 派活卡(0.3.0) ---- */
+  /** 当前打开的 manager 用户会话名下的 run;切到普通会话即清空(只在 manager 会话打开时拉)。 */
+  const [agentRuns, setAgentRuns] = useState<readonly AgentRunSummary[]>([])
+  /** delegation 确认请求,按 runId 索引;awaiting 派活卡的确认内容/响应入口。 */
+  const [delegationRequests, setDelegationRequests] = useState<
+    ReadonlyMap<string, { readonly request: DelegationApprovalRequest; readonly responded: boolean }>
+  >(new Map())
+  /** 已取回的派活详情(结论摘要/展开细节/完整过程共用一份缓存)。 */
+  const [runDetails, setRunDetails] = useState<ReadonlyMap<string, AgentRunDetail>>(new Map())
+  const [runDetailLoading, setRunDetailLoading] = useState<ReadonlySet<string>>(new Set())
+
   const [settings, setSettings] = useState<Settings | null>(null)
   const [credentials, setCredentials] = useState<readonly CredentialStatus[]>([])
   const [reminders, setReminders] = useState<readonly Reminder[]>([])
@@ -290,6 +331,47 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   settingsRef.current = settings
   const sessionsRef = useRef<readonly SessionSummary[]>([])
   sessionsRef.current = sessions
+  /** agentRuns 属于哪条 manager 会话(事件 upsert 按它过滤);非 manager 会话为 null。 */
+  const agentRunsSessionRef = useRef<string | null>(null)
+  /** 详情加载中的同步去重守卫(StrictMode 双跑 effect 也只发一次 getDetail)。 */
+  const runDetailLoadingRef = useRef<ReadonlySet<string>>(new Set())
+  /**
+   * 闭合复核(并发窗口):getDetail 在途期间又收到刷新触发时记 dirty 标;
+   * 当前请求落地后若标还在,尾随再拉一次——慢请求撞上 500ms 定时器/agent_run_updated 不丢刷新。
+   */
+  const runDetailDirtyRef = useRef<ReadonlySet<string>>(new Set())
+  /** agentRuns 最新值(整页详情打开入口要按 runId 找活体,事件回调外用 ref 穿透)。 */
+  const agentRunsRef = useRef<readonly AgentRunSummary[]>([])
+  agentRunsRef.current = agentRuns
+
+  /* ---- 守则草稿预填(批 2b,PLAN §10.5) ---- */
+  /** 「用这个草稿建角色」带进向导的预填;普通「新建角色」为 null。 */
+  const [wizardPrefill, setWizardPrefill] = useState<{
+    readonly displayName: string
+    readonly guardrails: string
+  } | null>(null)
+  /** 「过目并保存」带进守则编辑页的预填正文;普通「编辑守则」为 null。 */
+  const [rulesPrefill, setRulesPrefill] = useState<string | null>(null)
+
+  /* ---- internal 只读详情整页(批 2b,PLAN §10.3) ---- */
+  /** 非 null 即 ViewMode='agent-run-detail';snapshot 兜底列表里找不到的 run(角色被删等)。 */
+  const [runDetailOpen, setRunDetailOpen] = useState<{
+    readonly runId: string
+    readonly snapshot: AgentRunSummary
+  } | null>(null)
+  /** 事件回调里判断「详情页正开着哪个 run」(agent_run_updated → 重拉完整过程;internal 事件 → 防抖同步)。 */
+  const runDetailOpenRef = useRef<{
+    readonly runId: string
+    readonly snapshot: AgentRunSummary
+  } | null>(null)
+  runDetailOpenRef.current = runDetailOpen
+  /**
+   * 严重-2(0.3.0 整改):详情页打开时 child(internal)干活事件的防抖同步计时器。
+   * 非 null 表示 500ms 窗口内已挂起一次重拉,窗口内后续事件合并掉(最多每 500ms 拉一次)。
+   */
+  const runDetailSyncTimerRef = useRef<number | null>(null)
+  /** usage_updated 防抖计时器(初审-严重,PLAN §9.2):200ms 窗口合并成一次重拉。 */
+  const usageSyncTimerRef = useRef<number | null>(null)
 
   const showNotice = useCallback((text: string) => {
     setNotice(text)
@@ -297,19 +379,44 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     noticeTimerRef.current = window.setTimeout(() => setNotice(null), 3200)
   }, [])
 
-  const applyDetail = useCallback((detail: SessionDetail) => {
-    setActiveDetail(detail)
-    setActiveSessionId(detail.summary.id)
-    setMessages(detail.messages)
-    setStreaming(false)
-    setChatError(null)
-    setLastFailedText(null)
-    setContextUsage(null) // 切换会话时清空用量环
-    streamingMessageIdRef.current = null
-    setStreamingMessageId(null)
-    // 手风琴:当前会话所属角色自动展开
-    if (detail.summary.roleId !== null) setExpandedRoleId(detail.summary.roleId)
-  }, [])
+  const applyDetail = useCallback(
+    (detail: SessionDetail) => {
+      setActiveDetail(detail)
+      setActiveSessionId(detail.summary.id)
+      setMessages(detail.messages)
+      setStreaming(false)
+      setChatError(null)
+      setLastFailedText(null)
+      setContextUsage(null) // 切换会话时清空用量环
+      streamingMessageIdRef.current = null
+      setStreamingMessageId(null)
+      // 详情整页(批 2b)属于上一条 manager 会话:切会话即关掉,不留旧 run 悬在空中
+      setRunDetailOpen(null)
+      // 手风琴:当前会话所属角色自动展开
+      if (detail.summary.roleId !== null) setExpandedRoleId(detail.summary.roleId)
+      // 0.3.0(PLAN §10.2):只在 manager 用户会话打开时拉派活卡;普通会话清空。
+      // 判定用内置总管固定 ID(常量),不读 bootstrap state——bootstrap 首次打开入口会话时
+      // setBootstrap 还没落渲染,读 state/ref 会拿到 null 而漏拉。
+      if (detail.summary.roleId === SYSTEM_MANAGER_ROLE_ID) {
+        const sessionId = detail.summary.id
+        agentRunsSessionRef.current = sessionId
+        setAgentRuns([])
+        bridge
+          .invoke('agentRun:list', { managerSessionId: sessionId })
+          .then((runs) => {
+            // 拉回时用户可能已切走,只认仍是当前 run 会话的结果
+            if (agentRunsSessionRef.current === sessionId) setAgentRuns([...runs])
+          })
+          .catch(() => {
+            if (agentRunsSessionRef.current === sessionId) setAgentRuns([])
+          })
+      } else {
+        agentRunsSessionRef.current = null
+        setAgentRuns([])
+      }
+    },
+    [bridge],
+  )
 
   const openSession = useCallback(
     async (sessionId: string) => {
@@ -346,16 +453,28 @@ export function useAppController(bridge: DaweigeBridge): AppController {
       setSettings(state.settings)
       setCredentials(state.credentialStatuses)
       setReminders(state.upcomingReminders)
-      const lastId = state.settings.lastActiveSessionId
-      const last = lastId ? state.sessions.find((s) => s.id === lastId) : undefined
-      // 恢复上次活跃会话:会话本身或其角色已归档则不恢复,落空 chat
-      const lastRole = last?.roleId ? state.roles.find((r) => r.id === last.roleId) : undefined
-      const restorable =
-        last !== undefined &&
-        last.archivedAt === null &&
-        (last.roleId === null || (lastRole !== undefined && lastRole.archivedAt === null))
-      if (lastId && restorable) {
-        await openSession(lastId)
+      const managerEntryId = state.manager?.entrySessionId ?? null
+      if (managerEntryId !== null) {
+        // 0.3.0(PLAN §4.4):bootstrap 给了总管入口会话,无条件优先打开它,
+        // 优先级高于 lastActiveSessionId;入口缺失/已归档不虚构会话、
+        // 也不退回 worker 的上次会话,落空 chat 由用户自己点。
+        const entry = state.sessions.find((s) => s.id === managerEntryId)
+        if (entry !== undefined && entry.archivedAt === null) {
+          await openSession(entry.id)
+        }
+      } else {
+        // 总管降级(manager=null):保持 0.2.0 现有行为,恢复上次活跃会话
+        const lastId = state.settings.lastActiveSessionId
+        const last = lastId ? state.sessions.find((s) => s.id === lastId) : undefined
+        // 恢复上次活跃会话:会话本身或其角色已归档则不恢复,落空 chat
+        const lastRole = last?.roleId ? state.roles.find((r) => r.id === last.roleId) : undefined
+        const restorable =
+          last !== undefined &&
+          last.archivedAt === null &&
+          (last.roleId === null || (lastRole !== undefined && lastRole.archivedAt === null))
+        if (lastId && restorable) {
+          await openSession(lastId)
+        }
       }
     } catch (error) {
       setBootstrapError(humanizeError(error))
@@ -366,7 +485,94 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     void bootstrapOnce()
   }, [bootstrapOnce])
 
+  /**
+   * 派活详情拉取(结论摘要/展开细节/查看完整过程/详情页实时刷新共用);
+   * 加载中的重复调用直接跳过(同步守卫,StrictMode 双跑也只发一次)。
+   * 放在事件流之前定义:agent_run_updated 里要复用它刷新详情整页(批 2b)。
+   */
+  const loadRunDetail = useCallback(
+    (runId: string) => {
+      // 同 run 请求在途:不丢触发,记 dirty 标,等当前请求落地后尾随重拉(闭合复核)
+      if (runDetailLoadingRef.current.has(runId)) {
+        const nextDirty = new Set(runDetailDirtyRef.current)
+        nextDirty.add(runId)
+        runDetailDirtyRef.current = nextDirty
+        return
+      }
+      const nextLoading = new Set(runDetailLoadingRef.current)
+      nextLoading.add(runId)
+      runDetailLoadingRef.current = nextLoading
+      setRunDetailLoading(nextLoading)
+      const settleLoading = () => {
+        const next = new Set(runDetailLoadingRef.current)
+        next.delete(runId)
+        runDetailLoadingRef.current = next
+        setRunDetailLoading(next)
+        // 在途期间攒下的触发:清标后尾随再拉一次,以主进程最新快照为准
+        if (runDetailDirtyRef.current.has(runId)) {
+          const nextDirty = new Set(runDetailDirtyRef.current)
+          nextDirty.delete(runId)
+          runDetailDirtyRef.current = nextDirty
+          loadRunDetail(runId)
+        }
+      }
+      bridge
+        .invoke('agentRun:getDetail', { runId })
+        .then((detail) => {
+          setRunDetails((prev) => new Map(prev).set(runId, detail))
+        })
+        .catch(() => {
+          // 取详情失败不弹全局错:卡内保留「再点一次试试」的入口
+        })
+        .finally(settleLoading)
+    },
+    [bridge],
+  )
+
   /* ============ agent 事件流 ============ */
+  /**
+   * 严重-2(0.3.0 整改,PLAN §7.2/§10.3):详情整页打开时,child 的 internal 会话事件
+   * (text_delta/thinking_delta/message_end/tool_start/tool_end 等)轻量路由到这里——
+   * 短防抖后重拉 agentRun:getDetail,以主进程快照为准(renderer 不手拼流式 delta,
+   * 不会与 pi 持久化竞态)。500ms 窗口内事件合并成一次;详情页关闭/切走会话即停(触发时校验)。
+   */
+  const scheduleRunDetailSync = useCallback(
+    (runId: string) => {
+      if (runDetailSyncTimerRef.current !== null) return
+      runDetailSyncTimerRef.current = window.setTimeout(() => {
+        runDetailSyncTimerRef.current = null
+        if (runDetailOpenRef.current?.runId !== runId) return
+        loadRunDetail(runId)
+      }, 500)
+    },
+    [loadRunDetail],
+  )
+
+  /**
+   * 初审-严重(0.3.0 追加整改,PLAN §9.2):usage_updated 防抖 200ms 重拉。
+   * usage 落库可能晚于终态 agent_run_updated——不重拉的话 completed 派活卡会永远停在
+   * 「轮次 0 · 总 token 0」。只在 manager 会话 run 列表已加载时重拉列表(失败静默);
+   * 详情整页开着就同时重拉 getDetail。
+   */
+  const scheduleUsageSync = useCallback(() => {
+    if (usageSyncTimerRef.current !== null) return
+    usageSyncTimerRef.current = window.setTimeout(() => {
+      usageSyncTimerRef.current = null
+      const managerSessionId = agentRunsSessionRef.current
+      if (managerSessionId !== null) {
+        bridge
+          .invoke('agentRun:list', { managerSessionId })
+          .then((runs) => {
+            // 拉回时用户可能已切走,只认仍是当前 run 会话的结果
+            if (agentRunsSessionRef.current === managerSessionId) setAgentRuns([...runs])
+          })
+          .catch(() => undefined)
+      }
+      const openRunId = runDetailOpenRef.current?.runId ?? null
+      if (openRunId !== null) loadRunDetail(openRunId)
+    }, 200)
+  }, [bridge, loadRunDetail])
+
   useEffect(() => {
     const unsubscribe = bridge.onAgentEvent((event: AgentPushEvent) => {
       // 更新状态是应用级事件,与会话无关
@@ -374,23 +580,76 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         setUpdateState(event.state)
         return
       }
-      // usage 更新通知由使用统计页自行订阅刷新,会话事件流不处理
-      if (event.type === 'usage_updated') return
+      // usage 更新通知(初审-严重,PLAN §9.2):防抖重拉 run 列表/详情,补齐晚落库的用量
+      if (event.type === 'usage_updated') {
+        scheduleUsageSync()
+        return
+      }
+      // 派活状态变化(0.3.0):upsert 进当前 manager 会话的 run 列表,卡片原位变状态(PLAN §10.2)
+      if (event.type === 'agent_run_updated') {
+        const run = event.run
+        if (run.managerSessionId === agentRunsSessionRef.current) {
+          setAgentRuns((prev) => {
+            const index = prev.findIndex((r) => r.runId === run.runId)
+            if (index < 0) return [...prev, run]
+            const next = [...prev]
+            next[index] = run
+            return next
+          })
+        }
+        // 详情整页正开着这条 run(running/waiting 实时刷新,批 2b PLAN §10.3):
+        // 重拉 getDetail 恢复完整历史;loadRunDetail 自带加载中去重
+        if (runDetailOpenRef.current?.runId === run.runId) loadRunDetail(run.runId)
+        return
+      }
+      // 严重-2(0.3.0 整改):详情整页打开期间,child internal 会话的干活事件
+      // 防抖 500ms 重拉详情——运行中打开「查看完整过程」能看到过程持续推进。
+      // internalSessionId 优先取列表活体(批准后才挂上),兜底打开时的快照。
+      if (
+        event.type === 'message_start' ||
+        event.type === 'text_delta' ||
+        event.type === 'thinking_delta' ||
+        event.type === 'message_end' ||
+        event.type === 'tool_start' ||
+        event.type === 'tool_end'
+      ) {
+        const openRun = runDetailOpenRef.current
+        if (openRun !== null) {
+          const internalSessionId =
+            agentRunsRef.current.find((r) => r.runId === openRun.runId)?.internalSessionId ??
+            openRun.snapshot.internalSessionId
+          if (internalSessionId !== null && event.sessionId === internalSessionId) {
+            scheduleRunDetailSync(openRun.runId)
+          }
+        }
+      }
       // 确认类事件(approval_*/tool_*)不限会话记录——卡片按会话归属保存,
       // 切走的会话弹确认卡也不丢(复审 S-01);消息流事件只处理当前会话。
       const isCurrentSession = event.sessionId === activeSessionIdRef.current
       switch (event.type) {
-        case 'approval_required':
+        case 'approval_required': {
+          // delegation(0.3.0)不进文件卡浮层:渲染并入对应派活卡(PLAN §6.2/§10.4),
+          // 这里按 runId 存好请求,awaiting 派活卡从 delegation.approvalFor 取
+          if (event.request.kind === 'delegation') {
+            const request = event.request
+            setDelegationRequests((prev) =>
+              new Map(prev).set(request.runId, { request, responded: false }),
+            )
+            break
+          }
+          const request = event.request
           setAllApprovals((prev) => [
             ...prev,
             {
               sessionId: event.sessionId,
-              request: event.request,
+              surfaceSessionId: event.surfaceSessionId ?? event.sessionId,
+              request,
               phase: 'pending',
               responded: false,
             },
           ])
           break
+        }
         case 'approval_resolved':
           setAllApprovals((prev) =>
             prev.map((card) =>
@@ -404,6 +663,16 @@ export function useAppController(bridge: DaweigeBridge): AppController {
                 : card,
             ),
           )
+          // delegation 的已决回执:标 responded,卡片状态等 agent_run_updated 来翻
+          setDelegationRequests((prev) => {
+            for (const entry of prev.values()) {
+              if (entry.request.id !== event.approvalId) continue
+              const next = new Map(prev)
+              next.set(entry.request.runId, { ...entry, responded: true })
+              return next
+            }
+            return prev
+          })
           break
         case 'tool_start':
           // 非当前会话时消息里没有对应条目,map 无命中,天然无害
@@ -431,8 +700,19 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         }
       }
     })
-    return unsubscribe
-  }, [bridge])
+    return () => {
+      unsubscribe()
+      // 组件卸载(或桥换实例)时停掉挂起的详情/用量同步
+      if (runDetailSyncTimerRef.current !== null) {
+        window.clearTimeout(runDetailSyncTimerRef.current)
+        runDetailSyncTimerRef.current = null
+      }
+      if (usageSyncTimerRef.current !== null) {
+        window.clearTimeout(usageSyncTimerRef.current)
+        usageSyncTimerRef.current = null
+      }
+    }
+  }, [bridge, loadRunDetail, scheduleRunDetailSync, scheduleUsageSync])
 
   /** 当前会话的消息流事件(message 系列、agent_error、agent_end)。 */
   const handleChatEvent = (event: AgentPushEvent): void => {
@@ -515,7 +795,14 @@ export function useAppController(bridge: DaweigeBridge): AppController {
    * keepDetail=false(删除等):消息、detail 一并清空回空态。
    */
   const clearActiveSession = useCallback((sessionId: string, keepDetail: boolean) => {
-    setAllApprovals((prev) => prev.filter((c) => c.sessionId !== sessionId))
+    // 归属或展示在这条会话的卡都撤掉(child 文件卡 surface 在 manager 会话,随 manager 会话一起清)
+    setAllApprovals((prev) =>
+      prev.filter((c) => c.sessionId !== sessionId && c.surfaceSessionId !== sessionId),
+    )
+    if (agentRunsSessionRef.current === sessionId) {
+      agentRunsSessionRef.current = null
+      setAgentRuns([])
+    }
     if (activeSessionIdRef.current !== sessionId) return
     setContextUsage(null)
     setStreaming(false)
@@ -709,7 +996,11 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         const deletedIds = new Set(result.deletedSessionIds)
         setRoles((prev) => prev.filter((r) => r.id !== roleId))
         setSessions((prev) => prev.filter((s) => !deletedIds.has(s.id)))
-        setAllApprovals((prev) => prev.filter((c) => !deletedIds.has(c.sessionId)))
+        setAllApprovals((prev) =>
+          prev.filter(
+            (c) => !deletedIds.has(c.sessionId) && !deletedIds.has(c.surfaceSessionId),
+          ),
+        )
         // 当前页/会话属于被删角色:回空 chat
         const active = activeSessionIdRef.current
         if (active !== null && deletedIds.has(active)) {
@@ -747,10 +1038,15 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   )
 
   /* ---- 守则编辑页 ---- */
+  /**
+   * 打开守则编辑页;prefillGuardrails(批 2b 草稿卡「过目并保存」)只做本地预填,
+   * 由 RoleRulesView 填进编辑框——用户亲手点保存才发 role:updateGuardrails,AI 不落笔。
+   */
   const openRoleRules = useCallback(
-    async (roleId: string) => {
+    async (roleId: string, prefillGuardrails?: string) => {
       setRulesRoleId(roleId)
       setRulesDetail(null)
+      setRulesPrefill(prefillGuardrails ?? null)
       setRulesLoading(true)
       setView('role-rules')
       try {
@@ -759,6 +1055,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
       } catch (error) {
         showNotice(humanizeError(error))
         setRulesRoleId(null)
+        setRulesPrefill(null)
         setView('chat')
       } finally {
         setRulesLoading(false)
@@ -804,6 +1101,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   const closeRoleRules = useCallback(() => {
     setRulesRoleId(null)
     setRulesDetail(null)
+    setRulesPrefill(null)
     setView('chat')
   }, [])
 
@@ -911,6 +1209,69 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     [bridge],
   )
 
+  /* ============ 派活卡(0.3.0) ============ */
+  /**
+   * 派活确认响应:approve=同意派出 / reject=不派,按 approvalId 走 approval:respond。
+   * 重复点击只发一次;发送失败允许再点一次。
+   */
+  const respondDelegation = useCallback(
+    (request: DelegationApprovalRequest, decision: 'approve' | 'reject') => {
+      const entry = delegationRequests.get(request.runId)
+      if (entry === undefined || entry.responded) return
+      setDelegationRequests((prev) => {
+        const current = prev.get(request.runId)
+        if (current === undefined || current.responded) return prev
+        return new Map(prev).set(request.runId, { ...current, responded: true })
+      })
+      void bridge
+        .invoke('approval:respond', { approvalId: request.id, decision })
+        .catch((error: unknown) => {
+          // 失败回退只允许「翻回本次尝试的条目」:条目被更新的请求替换过、
+          // 或已决回执先到了,都不动——不把已 responded=true 的条目覆盖回 false 复活成可点
+          setDelegationRequests((prev) => {
+            const current = prev.get(request.runId)
+            if (current === undefined || current.request.id !== request.id) return prev
+            return new Map(prev).set(request.runId, { ...current, responded: false })
+          })
+          showNotice(humanizeError(error))
+        })
+    },
+    [bridge, delegationRequests, showNotice],
+  )
+
+  /**
+   * 「查看完整过程」(批 2b,PLAN §10.3):打开 internal 只读详情整页。
+   * run 找不到(列表已换会话等)就不开,避免悬空页;打开即拉详情(去重由 loadRunDetail 管)。
+   */
+  const openAgentRunDetail = useCallback(
+    (runId: string) => {
+      const run = agentRunsRef.current.find((r) => r.runId === runId)
+      if (run === undefined) return
+      setRunDetailOpen({ runId, snapshot: run })
+      loadRunDetail(runId)
+      setView('agent-run-detail')
+    },
+    [loadRunDetail],
+  )
+
+  const closeAgentRunDetail = useCallback(() => {
+    setRunDetailOpen(null)
+    setView('chat')
+  }, [])
+
+  /** 传给 DelegationCard 的稳定动作合集;数据面(map/set)变化时才换新引用。 */
+  const delegation: DelegationCardActions = useMemo(
+    () => ({
+      approvalFor: (runId) => delegationRequests.get(runId),
+      detailFor: (runId) => runDetails.get(runId),
+      detailLoadingFor: (runId) => runDetailLoading.has(runId),
+      onLoadDetail: loadRunDetail,
+      onOpenFullDetail: openAgentRunDetail,
+      onRespond: respondDelegation,
+    }),
+    [delegationRequests, runDetails, runDetailLoading, loadRunDetail, openAgentRunDetail, respondDelegation],
+  )
+
   /* ============ 设置与凭据 ============ */
   const selectProvider = useCallback(
     async (selection: ProviderSelection) => {
@@ -969,6 +1330,26 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     [bridge],
   )
 
+  /* ---- 新建角色向导(批 2b 起支持草稿预填:只预填,不替用户确认) ---- */
+  const openWizard = useCallback(
+    (prefill?: { readonly displayName: string; readonly guardrails: string }) => {
+      // 防御:onClick={openWizard} 这类直连会把 MouseEvent 当 prefill 漏进来,只认草稿形状
+      const clean =
+        prefill != null &&
+        typeof prefill.displayName === 'string' &&
+        typeof prefill.guardrails === 'string'
+          ? prefill
+          : null
+      setWizardPrefill(clean)
+      setWizardOpen(true)
+    },
+    [],
+  )
+  const closeWizard = useCallback(() => {
+    setWizardOpen(false)
+    setWizardPrefill(null)
+  }, [])
+
   /* ============ 提醒 ============ */
   const dismissReminder = useCallback((memoryId: string) => {
     setDismissedReminders((prev) => [...prev, memoryId])
@@ -976,11 +1357,26 @@ export function useAppController(bridge: DaweigeBridge): AppController {
 
   const visibleReminders = reminders.filter((r) => !dismissedReminders.includes(r.memoryId))
 
-  /** 当前会话的确认卡(其他会话的留在状态里,切回去不丢)。 */
-  const approvals = allApprovals.filter((c) => c.sessionId === activeSessionId)
+  /** 当前会话可见的确认卡:按展示会话(surface)过滤——child 文件卡浮在小柊会话,响应仍按 approvalId 回主进程(PLAN §10.4)。 */
+  const approvals = allApprovals.filter((c) => c.surfaceSessionId === activeSessionId)
 
   // A-13:AI 名字跟角色走——会话换了角色,气泡名与空态文案立刻跟着换
   const activeRoleName = resolveActiveRoleName(roles, activeDetail)
+
+  /**
+   * 详情整页(批 2b):run 优先取列表里的活体(agent_run_updated 实时变状态),
+   * 列表里找不到(切了会话/角色被删等)退回打开时的快照,页面不塌。
+   */
+  const runDetailView = useMemo(() => {
+    if (runDetailOpen === null) return null
+    const run =
+      agentRuns.find((r) => r.runId === runDetailOpen.runId) ?? runDetailOpen.snapshot
+    return {
+      run,
+      detail: runDetails.get(runDetailOpen.runId),
+      loading: runDetailLoading.has(runDetailOpen.runId),
+    }
+  }, [runDetailOpen, agentRuns, runDetails, runDetailLoading])
 
   return {
     bootstrap,
@@ -1009,8 +1405,9 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     expandedRoleId,
     setExpandedRoleId,
     wizardOpen,
-    openWizard: () => setWizardOpen(true),
-    closeWizard: () => setWizardOpen(false),
+    wizardPrefill,
+    openWizard,
+    closeWizard,
     createRole,
     renameRole,
     archiveRole,
@@ -1023,6 +1420,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     rulesRoleId,
     rulesDetail,
     rulesLoading,
+    rulesPrefill,
     openRoleRules,
     closeRoleRules,
     saveGuardrails,
@@ -1051,6 +1449,11 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     lastFailedText,
     approvals,
     respondApproval,
+    agentRuns,
+    delegation,
+    runDetailView,
+    openAgentRunDetail,
+    closeAgentRunDetail,
     settings,
     selectProvider,
     updateThinkingLevel,

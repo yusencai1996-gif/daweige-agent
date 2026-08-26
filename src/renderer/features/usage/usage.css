@@ -419,3 +419,49 @@
   text-align: right;
   flex: 0 0 auto;
 }
+
+/* ============ 派活用量折叠区(0.3.0 批 2b,PLAN §9.3) ============ */
+/* 与现有四区同一套 usage-section 面;默认折叠,展开按 run 列一行 */
+.usage-delegations-head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.usage-delegations-subtotal {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-delegation-list {
+  margin: 10px 0 0;
+  padding: 10px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.usage-delegation-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+.usage-delegation-name {
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+/* 任务简报一行截断,全文看 title(窄窗不顶破行) */
+.usage-delegation-brief {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.usage-delegation-meta {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}

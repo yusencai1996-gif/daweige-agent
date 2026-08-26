@@ -1,6 +1,13 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { ChatMessage, MemoryEntry, SessionDetail, SessionSummary } from '../../shared/domain'
+import type {
+  AgentRunDetail,
+  AgentRunSummary,
+  ChatMessage,
+  MemoryEntry,
+  SessionDetail,
+  SessionSummary,
+} from '../../shared/domain'
 import type { DaweigeBridge } from '../../shared/ipc/bridge'
 import type { MockBridge } from '../../../tests/helpers/mock-bridge'
 import { App } from './App'
@@ -12,6 +19,7 @@ import '../styles/approvals.css'
 import '../styles/settings.css'
 import '../styles/reminders.css'
 import '../features/roles/roles.css'
+import '../features/manager/manager.css'
 import '../features/usage/usage.css'
 
 /**
@@ -73,6 +81,77 @@ function wireDemoBehaviors(mock: MockBridge): void {
   let idCounter = 0
   const nextId = (prefix: string) => `${prefix}-${++idCounter}`
 
+  /** 总管演示会话(0.3.0):bootstrap.manager.entrySessionId 指向它,启动默认落在这条。 */
+  const managerSummary: SessionSummary = {
+    id: 'demo-session-manager',
+    title: '和小柊聊天',
+    workspacePath: '',
+    roleId: 'sys-xiaozhen',
+    archivedAt: null,
+    providerId: 'kimi-coding',
+    modelId: 'kimi-for-coding',
+    createdAt: now - 7_200_000,
+    updatedAt: now - 600_000,
+    messageCount: 5,
+  }
+  const managerHistory: ChatMessage[] = [
+    {
+      kind: 'chat',
+      role: 'user',
+      id: 'demo-mgr-u1',
+      text: '小柊,你能帮我干什么?',
+      createdAt: now - 7_000_000,
+    },
+    {
+      kind: 'chat',
+      role: 'assistant',
+      id: 'demo-mgr-a1',
+      text: '我是小柊,这个家的总管。简单的事我直接答;要动文件夹、多步骤的活儿,我会派给合适的伙伴去做,做完把结果拿给你过目。',
+      createdAt: now - 6_900_000,
+    },
+    {
+      kind: 'chat',
+      role: 'user',
+      id: 'demo-mgr-u2',
+      text: '我想再招个专管记账的伙伴,你给起个草稿?',
+      createdAt: now - 5_900_000,
+    },
+    {
+      kind: 'chat',
+      // 批 2b 演示(PLAN §10.5):新角色场景的好草稿块——卡片「用这个草稿建角色」预填向导
+      role: 'assistant',
+      id: 'demo-mgr-a2',
+      text: `可以。我起了一份草稿,你先过目:
+
+\`\`\`daweige-role-draft
+{
+  "displayName": "小账",
+  "guardrails": "# 角色守则\\n\\n## 身份\\n你是小账,管家里的收支台账。\\n\\n## 干活方式\\n- 只在交给你的文件夹里读写\\n- 每笔记账都写清来源票据\\n\\n## 禁区\\n- 不改动历史账单原件,只新增修订记录"
+}
+\`\`\`
+
+看中就点「用这个草稿建角色」:名字和守则都替你填好了,文件夹和人设你亲手选,最后你确认才算数。`,
+      createdAt: now - 5_800_000,
+    },
+    {
+      kind: 'chat',
+      // 既有角色场景(targetRoleId=小编)+ 坏块演示:坏块只当普通代码文本,不出卡、不动作
+      role: 'assistant',
+      id: 'demo-mgr-a3',
+      text: `另外给「小编」补了一条守则草稿,点「过目并保存」会在守则页填好,你看了亲手保存才生效:
+
+\`\`\`daweige-role-draft
+{"displayName":"小编","guardrails":"# 角色守则\\n\\n## 身份\\n你是小编,家里的写手。\\n\\n## 补充\\n- 成稿先给主人过目,再定稿","targetRoleId":"agent-a1b2c3d4e5f6"}
+\`\`\`
+
+顺带说一句:写坏的这种标记我只当普通文字,不会有任何动作——
+
+\`\`\`daweige-role-draft
+{ "displayName": "坏掉的草稿", "guardrails":
+\`\`\``,
+      createdAt: now - 5_700_000,
+    },
+  ]
   const demoSummary: SessionSummary = {
     id: 'demo-session-1',
     title: '整理下载文件夹',
@@ -102,7 +181,7 @@ function wireDemoBehaviors(mock: MockBridge): void {
     },
   ]
 
-  const summaries: SessionSummary[] = [demoSummary]
+  const summaries: SessionSummary[] = [managerSummary, demoSummary]
   const archivedSummary: SessionSummary = {
     id: 'demo-session-2',
     title: '去年的旧稿',
@@ -129,6 +208,7 @@ function wireDemoBehaviors(mock: MockBridge): void {
   }
   summaries.push(archivedSummary, legacySummary)
   const details = new Map<string, SessionDetail>([
+    ['demo-session-manager', { summary: managerSummary, messages: managerHistory }],
     ['demo-session-1', { summary: demoSummary, messages: demoHistory }],
     [
       'demo-session-legacy',
@@ -152,6 +232,65 @@ function wireDemoBehaviors(mock: MockBridge): void {
     { sessionId: string; toolCallId: string; messageId: string }
   >()
 
+  // 0.3.0 批 2a 演示:种子里那条「待确认」的派活(run-b2c3d4e5f6a70829,派给小编)
+  // 补一张 delegation 确认卡事件;点[同意派出]/[不派]后演示 run 原位变状态卡。
+  const demoAwaitingRun: AgentRunSummary = {
+    runId: 'run-b2c3d4e5f6a70829',
+    managerSessionId: 'demo-session-manager',
+    targetRoleId: 'agent-a1b2c3d4e5f6',
+    targetRoleName: '小编',
+    internalSessionId: null,
+    parentRunId: null,
+    status: 'awaiting-approval',
+    waitingReason: null,
+    taskBrief: '把 D:\\稿件草稿 里的素材整理成一篇 800 字短文',
+    allowedWorkspacePaths: ['D:\\稿件草稿'],
+    usage: {
+      rounds: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    },
+    createdAt: now - 120_000,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: now - 120_000,
+  }
+  const pendingDelegations = new Map<string, AgentRunSummary>([
+    ['approval-demo-delegation', demoAwaitingRun],
+  ])
+  /**
+   * 演示 run 的最新状态(批准/拒绝后流转):agentRun:getDetail 覆写以它为准,
+   * 没动过的 run 退回种子里 agentRun:list 的静态版本。
+   */
+  const demoRunState = new Map<string, AgentRunSummary>()
+  window.setTimeout(() => {
+    mock.emitAgentEvent({
+      type: 'approval_required',
+      sessionId: 'demo-session-manager',
+      surfaceSessionId: 'demo-session-manager',
+      request: {
+        id: 'approval-demo-delegation',
+        kind: 'delegation',
+        runId: demoAwaitingRun.runId,
+        targetRoleId: demoAwaitingRun.targetRoleId,
+        targetRoleName: demoAwaitingRun.targetRoleName,
+        taskBrief: demoAwaitingRun.taskBrief,
+        allowedWorkspacePaths: demoAwaitingRun.allowedWorkspacePaths,
+        acceptanceCriteria: [
+          '800 字左右,超出或不足都要说一声',
+          '只用素材里的事实,不虚构',
+          '存为新文件,不改原始素材',
+        ],
+        title: '派给小编:整理 800 字短文',
+        description: '小编只会在 D:\\稿件草稿 里读写,把素材整理成一篇 800 字左右的短文,存为新文件。',
+        createdAt: Date.now(),
+      },
+    })
+  }, 800)
+
   const schedule = (sessionId: string, fn: () => void, delay: number) => {
     const timer = window.setTimeout(fn, delay)
     const list = timers.get(sessionId) ?? []
@@ -165,10 +304,141 @@ function wireDemoBehaviors(mock: MockBridge): void {
 
   mock.seedDemoState({ sessions: [...summaries] })
 
-  // 使用统计演示数据:dev 预览直接可开「使用统计」整页
+  // 使用统计演示数据:dev 预览直接可开「使用统计」整页;
+  // 批 2b(PLAN §9.3)补上派活用量区——runs 取种子里有量的两条 run,小计与 totalTokens 对齐
   mock.handle('usage:getDashboard', async () => {
     const { demoUsageDashboard } = await import('../../../tests/helpers/mock-bridge')
-    return demoUsageDashboard()
+    const base = demoUsageDashboard()
+    const runs = await mock.invoke('agentRun:list', { managerSessionId: 'demo-session-manager' })
+    const billed = runs.filter((r) => r.usage.totalTokens > 0)
+    return {
+      ...base,
+      delegations: {
+        totalTokens: billed.reduce((sum, r) => sum + r.usage.totalTokens, 0),
+        runs: billed,
+      },
+    }
+  })
+
+  /**
+   * 批 2b 演示(PLAN §10.3):种子里 agentRun:getDetail 的 childSession 是空消息,
+   * 这里覆写补 2~3 条过程消息,详情整页打开不空;信封/结论沿用种子演示口径。
+   */
+  mock.handle('agentRun:getDetail', async ({ runId }) => {
+    const runs = await mock.invoke('agentRun:list', { managerSessionId: 'demo-session-manager' })
+    const seeded = runs.find((r) => r.runId === runId)
+    const run = demoRunState.get(runId) ?? seeded
+    if (!run) throw new Error(`MockBridge: 未预置派活 ${runId}`)
+    const startedAt = run.startedAt ?? run.createdAt
+    const childMessages: ChatMessage[] =
+      run.internalSessionId === null
+        ? []
+        : run.status === 'interrupted'
+          ? [
+              {
+                kind: 'chat',
+                role: 'user',
+                id: 'demo-run3-u1',
+                text: run.taskBrief,
+                createdAt: startedAt,
+              },
+              {
+                kind: 'chat',
+                role: 'assistant',
+                id: 'demo-run3-a1',
+                text: '收到,我先去翻上月的入库单,逐张和发票对。对到一半应用退出了,这次没自动接着干。',
+                createdAt: startedAt + 30_000,
+              },
+            ]
+          : run.runId === demoAwaitingRun.runId
+            ? [
+                {
+                  kind: 'chat',
+                  role: 'user',
+                  id: 'demo-run2-u1',
+                  text: run.taskBrief,
+                  createdAt: startedAt,
+                },
+                {
+                  kind: 'chat',
+                  role: 'assistant',
+                  id: 'demo-run2-a1',
+                  text: '好,我先看看 D:\\稿件草稿 里都有哪些素材,再搭 800 字短文的架子。',
+                  createdAt: startedAt + 15_000,
+                },
+              ]
+            : [
+                {
+                  kind: 'chat',
+                  role: 'user',
+                  id: 'demo-run1-u1',
+                  text: run.taskBrief,
+                  createdAt: startedAt,
+                },
+                {
+                  kind: 'chat',
+                  role: 'assistant',
+                  id: 'demo-run1-a1',
+                  text: '好的,我先把 D:\\门店报表 下各门店的月度销售表都读出来。',
+                  createdAt: startedAt + 20_000,
+                  toolExecutions: [
+                    {
+                      toolCallId: 'demo-run1-tool1',
+                      toolName: 'read_files',
+                      displayName: '读取文件',
+                      status: 'succeeded' as const,
+                      summary: '读取 3 家门店的月度销售表',
+                    },
+                  ],
+                },
+                {
+                  kind: 'chat',
+                  role: 'assistant',
+                  id: 'demo-run1-a2',
+                  text: '汇总完了:3 家门店总额 ¥20,370;南山店有一笔异常折让,我已经把明细写进 D:\\门店报表\\汇总结果.md。',
+                  createdAt: startedAt + 90_000,
+                },
+              ]
+    const detail: AgentRunDetail = {
+      run,
+      envelope: {
+        userRequest: '帮我把门店报表汇总一下,列出有异常的行',
+        managerConclusions: ['报表在 D:\\门店报表', '需要总额和异常行两项'],
+        taskBrief: run.taskBrief,
+        acceptanceCriteria: ['给出总额', '列出异常行', '结果保存为新文件'],
+        allowedWorkspacePaths: run.allowedWorkspacePaths,
+      },
+      result:
+        run.status === 'completed'
+          ? {
+              summary: '已汇总 3 家门店,总额 ¥20,370;发现南山店一笔异常折让。',
+              conclusions: ['城中店 ¥7,850', '东门店 ¥6,700', '南山店 ¥5,820'],
+              artifactPaths: ['D:\\门店报表\\汇总结果.md'],
+              unmetCriteria: [],
+              boundaryViolations: [],
+            }
+          : null,
+      childSession:
+        run.internalSessionId === null
+          ? null
+          : {
+              summary: {
+                id: run.internalSessionId,
+                title: `派活过程:${run.targetRoleName}`,
+                workspacePath: run.allowedWorkspacePaths[0] ?? '',
+                roleId: run.targetRoleId,
+                archivedAt: null,
+                providerId: 'kimi-coding',
+                modelId: 'kimi-for-coding',
+                createdAt: run.createdAt,
+                updatedAt: run.updatedAt,
+                messageCount: childMessages.length,
+              },
+              messages: childMessages,
+            },
+      readOnly: true,
+    }
+    return detail
   })
 
   mock.handle('session:list', () => summaries)
@@ -182,7 +452,8 @@ function wireDemoBehaviors(mock: MockBridge): void {
     const summary: SessionSummary = {
       id: nextId('session'),
       title: '新会话',
-      workspacePath: 'C:\\Users\\demo\\Downloads',
+      // 总管会话固定系统私有 cwd,演示数据里留空;worker 会话才带演示工作目录
+      workspacePath: roleId === 'sys-xiaozhen' ? '' : 'C:\\Users\\demo\\Downloads',
       roleId,
       archivedAt: null,
       providerId,
@@ -276,6 +547,55 @@ function wireDemoBehaviors(mock: MockBridge): void {
   })
 
   mock.handle('approval:respond', ({ approvalId, decision }) => {
+    // 派活确认(0.3.0):先回 approval_resolved,再演示 run 状态流转(queued→running / rejected)
+    const delegationRun = pendingDelegations.get(approvalId)
+    if (delegationRun) {
+      pendingDelegations.delete(approvalId)
+      const managerSessionId = delegationRun.managerSessionId
+      /** 发事件的同时记账:详情页此时若开着,getDetail 覆写要拿到同一个最新 run。 */
+      const emitRun = (run: AgentRunSummary) => {
+        demoRunState.set(run.runId, run)
+        mock.emitAgentEvent({ type: 'agent_run_updated', managerSessionId, run })
+      }
+      schedule(
+        managerSessionId,
+        () =>
+          mock.emitAgentEvent({
+            type: 'approval_resolved',
+            sessionId: managerSessionId,
+            approvalId,
+            decision: decision === 'reject' ? 'reject' : 'approve',
+          }),
+        200,
+      )
+      if (decision === 'reject') {
+        schedule(
+          managerSessionId,
+          () =>
+            emitRun({
+              ...delegationRun,
+              status: 'rejected',
+              completedAt: Date.now(),
+              updatedAt: Date.now(),
+            }),
+          400,
+        )
+      } else {
+        const approved: AgentRunSummary = { ...delegationRun, internalSessionId: 'demo-run-internal-2' }
+        schedule(
+          managerSessionId,
+          () => emitRun({ ...approved, status: 'queued', updatedAt: Date.now() }),
+          400,
+        )
+        schedule(
+          managerSessionId,
+          () =>
+            emitRun({ ...approved, status: 'running', startedAt: Date.now(), updatedAt: Date.now() }),
+          1200,
+        )
+      }
+      return undefined
+    }
     const pending = pendingApprovals.get(approvalId)
     if (!pending) return Promise.reject(new Error('确认 ID 不存在或已经处理过了'))
     pendingApprovals.delete(approvalId)

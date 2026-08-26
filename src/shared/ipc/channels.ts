@@ -24,6 +24,8 @@ export const INVOKE_CHANNELS = [
   'session:delete',
   'session:archive',
   'session:restore',
+  'agentRun:list',
+  'agentRun:getDetail',
   'message:send',
   'message:abort',
   'approval:respond',

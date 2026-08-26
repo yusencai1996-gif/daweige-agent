@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { PathPolicy } from './path-policy'
 import { PathPolicyError } from './path-policy'
+import { isStrictDelegationPathPolicy } from './path-policy'
 
 /**
  * 文件操作执行层(M4-03/04)。
@@ -34,7 +35,7 @@ export class FileOps {
 
   /** 读文本(txt/md/csv):UTF-8 优先,BOM 剥离;超限/二进制给可读错误。 */
   async readText(path: string): Promise<string> {
-    await this.assertNotAppInternal(path)
+    await this.assertReadableTarget(path, 'read_file')
     const stat = await fs.stat(path).catch(() => {
       throw new FileOpsError('not_found', `文件不存在:${path}`)
     })
@@ -49,13 +50,13 @@ export class FileOps {
   }
 
   async writeText(path: string, content: string): Promise<void> {
-    await this.assertWritableTarget(path)
+    await this.assertWritableTarget(path, 'write_file')
     await fs.mkdir(join(path, '..'), { recursive: true })
     await fs.writeFile(path, content, 'utf-8')
   }
 
   async listDirectory(path: string): Promise<FileItem[]> {
-    await this.assertNotAppInternal(path)
+    await this.assertReadableTarget(path, 'list_directory')
     const entries = await fs.readdir(path, { withFileTypes: true }).catch(() => {
       throw new FileOpsError('not_found', `文件夹不存在:${path}`)
     })
@@ -78,7 +79,7 @@ export class FileOps {
   }
 
   async makeDirectory(path: string): Promise<void> {
-    await this.assertWritableTarget(path)
+    await this.assertWritableTarget(path, 'make_directory')
     await fs.mkdir(path, { recursive: true })
   }
 
@@ -87,8 +88,9 @@ export class FileOps {
    * 预检不过全部不执行;执行期失败才出现部分成功,逐项如实上报。
    */
   async movePaths(paths: string[], destinationDir: string): Promise<ItemResult[]> {
-    await this.assertWritableTarget(destinationDir)
-    for (const p of paths) await this.assertWritableTarget(p)
+    await this.assertStrictBatch([...paths, destinationDir], 'move_paths', 'write')
+    await this.assertWritableTarget(destinationDir, 'move_paths')
+    for (const p of paths) await this.assertWritableTarget(p, 'move_paths')
 
     // 预检 1:全部源必须存在
     for (const p of paths) {
@@ -133,16 +135,18 @@ export class FileOps {
     if (/[\\/:]/.test(newName)) {
       throw new FileOpsError('fs_error', '新名字不能包含路径分隔符,只能改名字本身')
     }
-    await this.assertWritableTarget(path)
-    await this.assertWritableTarget(join(path, '..', newName))
     const dest = join(path, '..', newName)
+    await this.assertStrictBatch([path, dest], 'rename_path', 'write')
+    await this.assertWritableTarget(path, 'rename_path')
+    await this.assertWritableTarget(dest, 'rename_path')
     await fs.rename(path, dest)
     return dest
   }
 
   /** 删除走 Windows 回收站(由注入的 trash 函数实现,便于测试);先预检存在性。 */
   async deletePaths(paths: string[], trash: (p: string) => Promise<void>): Promise<ItemResult[]> {
-    for (const p of paths) await this.assertWritableTarget(p)
+    await this.assertStrictBatch(paths, 'delete_paths', 'write')
+    for (const p of paths) await this.assertWritableTarget(p, 'delete_paths')
     const results: ItemResult[] = []
     for (const p of paths) {
       if (!(await this.fileExists(p))) {
@@ -187,7 +191,7 @@ export class FileOps {
   }
 
   async readBinary(path: string): Promise<Buffer> {
-    await this.assertNotAppInternal(path)
+    await this.assertReadableTarget(path, 'read_binary')
     const stat = await fs.stat(path).catch(() => {
       throw new FileOpsError('not_found', `文件不存在:${path}`)
     })
@@ -198,24 +202,36 @@ export class FileOps {
   }
 
   async writeBinary(path: string, data: Uint8Array): Promise<void> {
-    await this.assertWritableTarget(path)
+    await this.assertWritableTarget(path, 'write_binary')
     await fs.mkdir(join(path, '..'), { recursive: true })
     await fs.writeFile(path, data)
   }
 
-  private async assertNotAppInternal(path: string): Promise<void> {
+  private async assertReadableTarget(path: string, toolName: string): Promise<void> {
+    await this.assertStrictBatch([path], toolName, 'read')
     const { zone } = await this.policy.classify(path)
     if (zone === 'app-internal') {
       throw new FileOpsError('app_internal', '应用内部数据不允许通过文件工具访问')
     }
   }
 
-  private async assertWritableTarget(path: string): Promise<void> {
+  private async assertWritableTarget(path: string, toolName: string): Promise<void> {
     this.policy.assertWritable(path)
+    await this.assertStrictBatch([path], toolName, 'write')
     const { zone } = await this.policy.classify(path)
     if (zone === 'app-internal') {
       throw new FileOpsError('app_internal', '应用内部数据不允许写入')
     }
+  }
+
+  private async assertStrictBatch(
+    paths: readonly string[],
+    toolName: string,
+    operation: 'read' | 'write',
+  ): Promise<void> {
+    if (!isStrictDelegationPathPolicy(this.policy)) return
+    const result = await this.policy.preflight(paths, toolName, operation)
+    if (!result.allowed) throw new FileOpsError('fs_error', result.reason)
   }
 }
 

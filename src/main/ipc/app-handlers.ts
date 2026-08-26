@@ -8,6 +8,7 @@ import type { ReminderService } from '../memory/reminder-service'
 import type { RoleService } from '../roles/role-service'
 import { registerHandler } from './handler'
 import { PROVIDER_CATALOG } from './provider-catalog'
+import type { ManagerBootstrap } from '../../shared/domain/manager'
 
 /**
  * 应用级 handler:bootstrap 汇总启动一次性状态(含 M5-03 提醒 + 0.2.0 角色)。
@@ -21,6 +22,8 @@ export interface AppHandlerDeps {
   roleService?: RoleService
   /** 启动迁移失败的中文说明(可选,专审整改:不再静默吞掉)。 */
   migrationError?: string
+  /** manager 种子失败时为 null;成功则提供默认入口。 */
+  manager?: ManagerBootstrap | null
 }
 
 export function registerAppHandlers(deps: AppHandlerDeps): void {
@@ -42,6 +45,7 @@ export function registerAppHandlers(deps: AppHandlerDeps): void {
     return {
       appVersion: app.getVersion(),
       ...(deps.migrationError ? { migrationError: deps.migrationError } : {}),
+      manager: deps.manager ?? null,
       roles,
       sessions,
       settings,

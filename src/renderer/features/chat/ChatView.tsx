@@ -1,4 +1,6 @@
+import { useMemo } from 'react'
 import type {
+  AgentRunSummary,
   ApprovalDecision,
   ProviderInfo,
   ProviderSelection,
@@ -12,6 +14,9 @@ import { ReminderBanner } from '../reminders/ReminderBanner'
 import { ApprovalCard } from '../approvals/ApprovalCard'
 import { Composer } from './Composer'
 import { MessageList } from './MessageList'
+import { mergeTimeline } from '../manager/conversation-timeline'
+import type { DelegationCardActions } from '../manager/DelegationCard'
+import type { GuardrailsDraftCardActions } from '../manager/GuardrailsDraftCard'
 import type { ChatMessage } from '../../../shared/domain'
 
 interface ChatViewProps {
@@ -20,6 +25,15 @@ interface ChatViewProps {
   readonly detailLoading: boolean
   readonly hasSessions: boolean
   readonly messages: readonly ChatMessage[]
+  /** 当前 manager 用户会话的派活卡列表(0.3.0;普通会话恒空),与 messages 按 createdAt 合并渲染。 */
+  readonly agentRuns: readonly AgentRunSummary[]
+  /** 派活卡动作合集(确认响应/详情懒加载)。 */
+  readonly delegation: DelegationCardActions
+  /**
+   * 守则草稿卡动作(批 2b,PLAN §10.5):好块成卡,预填打开既有界面;坏块只当普通文本。
+   * 可选(阻断-3):只有总管(小柊)会话才传;普通 worker 会话不传,draft 块按普通代码块渲染。
+   */
+  readonly draftActions?: GuardrailsDraftCardActions
   /** 当前会话里 AI 的名字(A-13,跟角色走;无会话时兜底「小柊」):气泡名/欢迎页/空态文案统一用它。 */
   readonly roleName: string
   /** 正在流式输出的 assistant 消息 id(message_start 置位,message_end 清空);思考块据此自动展开/折叠。 */
@@ -58,6 +72,9 @@ export function ChatView({
   detailLoading,
   hasSessions,
   messages,
+  agentRuns,
+  delegation,
+  draftActions,
   roleName,
   streamingMessageId,
   approvals,
@@ -88,6 +105,8 @@ export function ChatView({
     providers.find((p) => p.id === selection.providerId)?.supportsThinking ?? false
   // 浮层只放未决/执行中的确认卡;批完(成功/拒绝/失败)即消失,结果看消息流里的工具状态行。
   const floatingApprovals = approvals.filter((c) => c.phase === 'pending' || c.phase === 'running')
+  // 0.3.0(PLAN §10.2):消息与派活卡按 createdAt 稳定合并成一条时间线
+  const timelineItems = useMemo(() => mergeTimeline(messages, agentRuns), [messages, agentRuns])
 
   // 会话标题/工作文件夹已上移到标题栏;模型选择、思考强度下移进输入区工具行,
   // 原 chat-header 整行撤掉(窄屏侧栏开关挪进 Composer 工具行)。
@@ -141,7 +160,7 @@ export function ChatView({
         <div className="chat-empty">
           <div className="chat-empty-inner">正在翻这条会话的记录…</div>
         </div>
-      ) : messages.length === 0 && floatingApprovals.length === 0 ? (
+      ) : timelineItems.length === 0 && floatingApprovals.length === 0 ? (
         archived ? (
           <div className="chat-empty">
             <div className="chat-empty-inner">
@@ -158,10 +177,12 @@ export function ChatView({
         )
       ) : (
         <MessageList
-          messages={messages}
+          items={timelineItems}
           roleName={roleName}
           streamingMessageId={streamingMessageId}
           onRetry={onRetry}
+          delegation={delegation}
+          draftActions={draftActions}
         />
       )}
 

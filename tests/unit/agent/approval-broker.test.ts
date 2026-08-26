@@ -16,7 +16,9 @@ function setup() {
 
 function lastApprovalRequest(events: AgentPushEvent[]) {
   const found = [...events].reverse().find((e) => e.type === 'approval_required')
-  if (found && found.type === 'approval_required') return found.request
+  // 本文件只测文件卡(broker.request 产物);delegation 卡(0.3.0)走 orchestrator 专属入口
+  if (found && found.type === 'approval_required' && found.request.kind !== 'delegation')
+    return found.request
   throw new Error('没有 approval_required 事件')
 }
 

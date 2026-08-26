@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { DaweigeBridge } from '../../shared/ipc/bridge'
 import { TitleBar } from '../components/TitleBar'
 import { RoleSidebar } from '../features/roles/RoleSidebar'
@@ -9,6 +9,9 @@ import { ArchiveView } from '../features/roles/ArchiveView'
 import { ChatView } from '../features/chat/ChatView'
 import { SettingsView } from '../features/settings/SettingsView'
 import { UsageView } from '../features/usage/UsageView'
+import { AgentRunDetailView } from '../features/manager/AgentRunDetailView'
+import type { GuardrailsDraftCardActions } from '../features/manager/GuardrailsDraftCard'
+import { SYSTEM_MANAGER_ROLE_ID } from '../../shared/domain/manager'
 import { useAppController } from './use-app-controller'
 
 /** 全局背景三层:纸纹(全屏唯一实例)+ 左右淡墨山,沉在内容之后。 */
@@ -54,6 +57,33 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
     if (target !== null) void controller.openRoleRules(target)
   }
 
+  /**
+   * 守则草稿卡动作(批 2b,PLAN §10.5):卡片只「打开既有界面并本地预填」,
+   * 保存/确认仍是用户在既有页面里亲手点——这里不发任何写 IPC。
+   *
+   * 阻断-3(0.3.0 整改):草稿卡是总管专属交互,只在当前会话绑定小柊(sys-xiaozhen)时传入;
+   * 普通 worker 会话拿到 undefined,```daweige-role-draft 块只按普通代码文本渲染,不出卡、无动作。
+   * useMemo 稳住引用:否则每次渲染新建对象会让 MessageList 的草稿解析整棵重来。
+   */
+  const managerSessionActive = controller.activeDetail?.summary.roleId === SYSTEM_MANAGER_ROLE_ID
+  const { roles, openRoleRules, openWizard } = controller
+  const draftActions: GuardrailsDraftCardActions | undefined = useMemo(
+    () =>
+      managerSessionActive
+        ? {
+            roleNameFor: (roleId) => roles.find((r) => r.id === roleId)?.displayName,
+            onReviewSave: (draft) => {
+              if (draft.targetRoleId !== null) {
+                void openRoleRules(draft.targetRoleId, draft.guardrails)
+              }
+            },
+            onCreateWith: (draft) =>
+              openWizard({ displayName: draft.displayName, guardrails: draft.guardrails }),
+          }
+        : undefined,
+    [managerSessionActive, roles, openRoleRules, openWizard],
+  )
+
   // 标题栏在最外层:所有界面状态(含启动失败页)都能拖动/关闭窗口
   return (
     <div className="app-root">
@@ -94,6 +124,7 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
           open={sidebarOpen}
           notice={controller.notice}
           migrationError={controller.bootstrap.migrationError ?? null}
+          managerDegraded={controller.bootstrap.manager === null}
           onClose={() => setSidebarOpen(false)}
           onToggleRole={(roleId) =>
             controller.setExpandedRoleId(controller.expandedRoleId === roleId ? null : roleId)
@@ -103,7 +134,8 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
           onRenameSession={controller.renameSession}
           onArchiveSession={(id) => void controller.archiveSession(id)}
           onDeleteSession={(id) => void controller.deleteSession(id)}
-          onCreateRole={controller.openWizard}
+          // 包一层:onClick 会把 MouseEvent 当 prefill 传进 openWizard(批 2b 起了可选入参)
+          onCreateRole={() => controller.openWizard()}
           onOpenRules={requestOpenRules}
           onRenameRole={controller.renameRole}
           onArchiveRole={(roleId) => void controller.archiveRole(roleId)}
@@ -136,6 +168,7 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
             <RoleRulesView
               detail={controller.rulesDetail}
               loading={controller.rulesLoading}
+              prefill={controller.rulesPrefill}
               onSave={controller.saveGuardrails}
               onBack={controller.closeRoleRules}
               onDirtyChange={setRulesDirty}
@@ -153,6 +186,14 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               onRestoreSession={(id) => void controller.restoreSession(id)}
               onDeleteSession={(id) => void controller.deleteSession(id)}
             />
+          ) : controller.view === 'agent-run-detail' && controller.runDetailView !== null ? (
+            <AgentRunDetailView
+              run={controller.runDetailView.run}
+              detail={controller.runDetailView.detail}
+              detailLoading={controller.runDetailView.loading}
+              delegation={controller.delegation}
+              onBack={controller.closeAgentRunDetail}
+            />
           ) : (
             <ChatView
               bridge={bridge}
@@ -160,6 +201,9 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               detailLoading={controller.detailLoading}
               hasSessions={controller.sessions.length > 0}
               messages={controller.messages}
+              agentRuns={controller.agentRuns}
+              delegation={controller.delegation}
+              draftActions={draftActions}
               roleName={controller.activeRoleName}
               streamingMessageId={controller.streamingMessageId}
               approvals={controller.approvals}
@@ -183,7 +227,7 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
                 void controller.respondApproval(card, decision, note)
               }
               onDismissReminder={controller.dismissReminder}
-              onCreateRole={controller.openWizard}
+              onCreateRole={() => controller.openWizard()}
             />
           )}
         </main>
@@ -192,6 +236,7 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
       {controller.wizardOpen && (
         <RoleCreateWizard
           bridge={bridge}
+          prefill={controller.wizardPrefill}
           onCancel={controller.closeWizard}
           onSubmit={controller.createRole}
         />

@@ -18,7 +18,7 @@ type AssistantContent = readonly (TextContent | ThinkingContent | ToolCall)[]
 
 /** 渲染展示用:映射成大微阁 ChatMessage 判别联合。 */
 export function entriesToChatMessages(entries: readonly Entry[]): ChatMessage[] {
-  // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(codex 复审阻断项)
+  // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(复审阻断项)
   const erroredCalls = new Map<string, string>()
   for (const entry of entries) {
     if (!isMessageEntry(entry)) continue

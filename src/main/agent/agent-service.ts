@@ -18,7 +18,12 @@ import type { SessionService } from '../storage/session-service'
 import type { UsageRecorder } from '../usage/usage-service'
 import { entriesToAgentMessages, entriesToChatMessages, TOOL_DISPLAY_NAMES } from './message-mapper'
 import { translateConnectivityError } from './connectivity-service'
-import { composeSystemPrompt, type RolePromptLayer } from './prompt-composer'
+import {
+  composeSystemPrompt,
+  type DelegationPromptLayer,
+  type ManagerPromptLayer,
+  type RolePromptLayer,
+} from './prompt-composer'
 import { redactCommonSecrets } from '../security/redaction'
 
 /**
@@ -39,6 +44,26 @@ export interface AgentModels {
   ): AssistantMessageEventStream
 }
 
+export interface AgentTurnInput {
+  readonly sessionId: string
+  readonly text: string
+  readonly selection: ProviderSelection
+  /** internal child 会话不需要根据任务简报改会话标题。 */
+  readonly updateTitle?: boolean
+}
+
+export interface AgentTurnResult {
+  readonly sessionId: string
+  readonly status: 'completed' | 'aborted' | 'failed'
+  readonly finalText: string
+  readonly errorMessage?: string
+}
+
+export interface AgentTurnRunner {
+  run(input: AgentTurnInput): Promise<AgentTurnResult>
+  abortSession(sessionId: string): void
+}
+
 export interface SessionToolchain {
   tools: AgentTool[]
   beforeToolCall?: ConstructorParameters<typeof Agent>[0]['beforeToolCall']
@@ -52,7 +77,9 @@ export interface AgentServiceDeps {
    * 每个会话的工具链工厂(M4:文件工具 + 确认闸门,per-session PathPolicy)。
    * 未提供时会话无工具(纯对话)。
    */
-  toolchain?: (ctx: { sessionId: string; workspacePath: string }) => SessionToolchain
+  toolchain?: (
+    ctx: { sessionId: string; workspacePath: string },
+  ) => SessionToolchain | Promise<SessionToolchain>
   /** 静态上下文附注(M5:已有记事摘要),追加到系统提示词。 */
   contextNotes?: () => Promise<readonly string[]>
   /**
@@ -60,6 +87,12 @@ export interface AgentServiceDeps {
    * 未提供(会话无绑定/角色功能未初始化)时只有全局底子。
    */
   rolePrompt?: (sessionId: string) => Promise<RolePromptLayer | undefined>
+  /** 0.3.0 每回合现场读取的总管/child 层;不缓存 roster 或 envelope。 */
+  orchestrationPrompt?: (sessionId: string) => Promise<{
+    readonly manager?: ManagerPromptLayer
+    readonly delegation?: DelegationPromptLayer
+    readonly workspacePaths?: readonly string[]
+  }>
   /** 当前思考强度(off/未设置 → 不传 reasoning,走模型默认行为)。 */
   thinkingLevel?: () => ThinkingLevel | undefined
   /** 使用统计记录(usage 模块);未提供时跳过记录(测试/降级)。 */
@@ -93,7 +126,7 @@ export class ModelNotReadyError extends Error {
   }
 }
 
-export class AgentService {
+export class AgentService implements AgentTurnRunner {
   private readonly active = new Map<string, ActiveAgent>()
 
   constructor(private readonly deps: AgentServiceDeps) {}
@@ -103,26 +136,13 @@ export class AgentService {
    * agent 循环在后台运行,回复经事件流推送。
    */
   async send(sessionId: string, text: string, selection: ProviderSelection): Promise<ChatMessage> {
-    const existing = this.active.get(sessionId)
-    if (existing?.agent.state.isStreaming) {
-      throw new AgentBusyError()
-    }
-    const active = existing ?? (await this.ensureAgent(sessionId, selection))
-    // 模型跟随当前选择(M3-05:顶部切换即时生效)
-    this.syncModel(active, selection)
-    // 0.2.0:每个用户回合开始前重读角色守则重拼提示词——守则改动从下一条消息生效(PLAN §3.2)
-    await this.refreshSystemPrompt(active)
-
-    const userMessage: UserMessage = { role: 'user', content: text, timestamp: Date.now() }
-    const entryId = await active.session.appendMessage(userMessage)
-    try {
-      this.deps.usageRecorder?.recordMessageSpan(sessionId, userMessage.timestamp)
-    } catch (err) {
-      console.error('[agent] usage 跨度记录异常(已忽略):', err)
-    }
-    await this.maybeUpdateTitle(active, text)
-
-    void this.runPrompt(active, userMessage)
+    const { active, userMessage, entryId } = await this.prepareTurn({
+      sessionId,
+      text,
+      selection,
+    })
+    // 普通聊天保持现有 fire-and-forget 语义,不 await 终态。
+    void this.executeTurn(active, userMessage)
 
     return {
       kind: 'chat',
@@ -133,7 +153,17 @@ export class AgentService {
     }
   }
 
+  /** WorkerRunner 可 await 的生产适配器;与 send 共用同一 Agent/持久化/事件映射。 */
+  async run(input: AgentTurnInput): Promise<AgentTurnResult> {
+    const { active, userMessage } = await this.prepareTurn(input)
+    return this.executeTurn(active, userMessage)
+  }
+
   abort(sessionId: string): void {
+    this.abortSession(sessionId)
+  }
+
+  abortSession(sessionId: string): void {
     this.active.get(sessionId)?.agent.abort()
   }
 
@@ -163,9 +193,12 @@ export class AgentService {
     const entries = await session.findEntriesOnBranch({ order: 'oldestFirst' })
     const model = this.resolveModel(selection)
     const meta = await session.getMetadata()
-    const toolchain = this.deps.toolchain?.({ sessionId, workspacePath: meta.cwd })
-    const memoryNotes = await this.deps.contextNotes?.()
-    const role = await this.deps.rolePrompt?.(sessionId)
+    const orchestration = await this.deps.orchestrationPrompt?.(sessionId)
+    const [toolchain, memoryNotes, role] = await Promise.all([
+      this.deps.toolchain?.({ sessionId, workspacePath: meta.cwd }),
+      orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
+      this.deps.rolePrompt?.(sessionId),
+    ])
 
     const agent = new Agent({
       initialState: {
@@ -173,6 +206,11 @@ export class AgentService {
           workspacePath: meta.cwd,
           memories: memoryNotes ?? [],
           role,
+          ...(orchestration?.manager ? { manager: orchestration.manager } : {}),
+          ...(orchestration?.delegation ? { delegation: orchestration.delegation } : {}),
+          ...(orchestration?.workspacePaths
+            ? { workspacePaths: orchestration.workspacePaths }
+            : {}),
         }),
         model,
         tools: toolchain?.tools ?? [],
@@ -199,14 +237,20 @@ export class AgentService {
 
   /** 每回合重读最新角色守则+记事索引,重建系统提示词(守则改动下一条消息生效)。 */
   private async refreshSystemPrompt(active: ActiveAgent): Promise<void> {
+    const orchestration = await this.deps.orchestrationPrompt?.(active.sessionId)
     const [memoryNotes, role] = await Promise.all([
-      this.deps.contextNotes?.() ?? [],
+      orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
       this.deps.rolePrompt?.(active.sessionId),
     ])
     active.agent.state.systemPrompt = composeSystemPrompt({
       workspacePath: active.workspacePath,
       memories: memoryNotes ?? [],
       role,
+      ...(orchestration?.manager ? { manager: orchestration.manager } : {}),
+      ...(orchestration?.delegation ? { delegation: orchestration.delegation } : {}),
+      ...(orchestration?.workspacePaths
+        ? { workspacePaths: orchestration.workspacePaths }
+        : {}),
     })
   }
 
@@ -341,14 +385,55 @@ export class AgentService {
     })
   }
 
-  private async runPrompt(active: ActiveAgent, userMessage: UserMessage): Promise<void> {
+  private async prepareTurn(input: AgentTurnInput): Promise<{
+    active: ActiveAgent
+    userMessage: UserMessage
+    entryId: string
+  }> {
+    const existing = this.active.get(input.sessionId)
+    if (existing?.agent.state.isStreaming) throw new AgentBusyError()
+    const active = existing ?? (await this.ensureAgent(input.sessionId, input.selection))
+    this.syncModel(active, input.selection)
+    await this.refreshSystemPrompt(active)
+    const userMessage: UserMessage = {
+      role: 'user',
+      content: input.text,
+      timestamp: Date.now(),
+    }
+    const entryId = await active.session.appendMessage(userMessage)
+    try {
+      this.deps.usageRecorder?.recordMessageSpan(input.sessionId, userMessage.timestamp)
+    } catch (err) {
+      console.error('[agent] usage 跨度记录异常(已忽略):', err)
+    }
+    if (input.updateTitle !== false) await this.maybeUpdateTitle(active, input.text)
+    return { active, userMessage, entryId }
+  }
+
+  private async executeTurn(
+    active: ActiveAgent,
+    userMessage: UserMessage,
+  ): Promise<AgentTurnResult> {
     try {
       // prompt 传已持久化的消息对象,agent 只把它并入 transcript,不重复入库
       await active.agent.prompt([userMessage])
+      return {
+        sessionId: active.sessionId,
+        status: 'completed',
+        finalText: finalAssistantText(active.agent.state.messages),
+      }
     } catch (err) {
-      if (!isAbortError(err)) {
+      if (isAbortError(err)) {
+        return { sessionId: active.sessionId, status: 'aborted', finalText: '' }
+      } else {
         const message = translateConnectivityError(err, [])
         this.push({ type: 'agent_error', sessionId: active.sessionId, message, retryable: true })
+        return {
+          sessionId: active.sessionId,
+          status: 'failed',
+          finalText: finalAssistantText(active.agent.state.messages),
+          errorMessage: message,
+        }
       }
     } finally {
       this.push({ type: 'agent_end', sessionId: active.sessionId })
@@ -365,6 +450,31 @@ export class AgentService {
   private push(event: AgentPushEvent): void {
     this.deps.emitEvent(event)
   }
+}
+
+function finalAssistantText(messages: readonly AgentMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!message || message.role !== 'assistant') continue
+    const content = message.content
+    if (typeof content === 'string') return content
+    if (Array.isArray(content)) {
+      return content
+        .filter((part): part is { type: 'text'; text: string } =>
+          Boolean(
+            part &&
+              typeof part === 'object' &&
+              'type' in part &&
+              part.type === 'text' &&
+              'text' in part &&
+              typeof part.text === 'string',
+          ),
+        )
+        .map((part) => part.text)
+        .join('')
+    }
+  }
+  return ''
 }
 
 function lastAssistant(active: ActiveAgent): AgentMessage | undefined {

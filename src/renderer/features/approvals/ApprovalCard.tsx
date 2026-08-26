@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ApprovalDecision, ApprovalKind } from '../../../shared/domain'
+import type { ApprovalDecision, FileApprovalRequest } from '../../../shared/domain'
 import type { ApprovalCardState, ApprovalPhase } from '../../app/use-app-controller'
 
 interface ApprovalCardProps {
@@ -8,7 +8,7 @@ interface ApprovalCardProps {
 }
 
 /** 批准按钮说清按下会发生什么,按操作类型给词。 */
-function approveLabel(kind: ApprovalKind, recoverable: boolean): string {
+function approveLabel(kind: FileApprovalRequest['kind'], recoverable: boolean): string {
   switch (kind) {
     case 'write':
       return '写进去'

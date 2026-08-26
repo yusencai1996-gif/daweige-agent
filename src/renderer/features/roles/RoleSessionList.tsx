@@ -9,11 +9,20 @@ import { SessionRowMenu } from './SessionRowMenu'
  * 双击会话名也可进入行内改名(单击仍是打开会话)。
  */
 
+/** 空态/新建按钮文案可覆盖(默认伙伴口吻;总管卡用「对话」口吻)。 */
+export interface RoleSessionListLabels {
+  readonly emptyText?: string
+  readonly emptyCreateLabel?: string
+  readonly createLabel?: string
+  readonly busyLabel?: string
+}
+
 interface RoleSessionListProps {
   readonly role: RoleSummary
   readonly sessions: readonly SessionSummary[]
   readonly activeSessionId: string | null
   readonly creatingSession: boolean
+  readonly labels?: RoleSessionListLabels
   readonly onOpenSession: (sessionId: string) => void
   readonly onCreateSession: (roleId: string) => void
   readonly onRenameSession: (sessionId: string, title: string) => Promise<boolean>
@@ -26,6 +35,7 @@ export function RoleSessionList({
   sessions,
   activeSessionId,
   creatingSession,
+  labels,
   onOpenSession,
   onCreateSession,
   onRenameSession,
@@ -64,18 +74,20 @@ export function RoleSessionList({
         !legacy &&
         (lifecycleBlocked ? (
           <div className="role-empty">
-            <div className="role-empty-text">这位伙伴还没开工</div>
+            <div className="role-empty-text">{labels?.emptyText ?? '这位伙伴还没开工'}</div>
           </div>
         ) : (
           <div className="role-empty">
-            <div className="role-empty-text">这位伙伴还没开工</div>
+            <div className="role-empty-text">{labels?.emptyText ?? '这位伙伴还没开工'}</div>
             <button
               type="button"
               className="btn btn-primary btn-sm"
               disabled={creatingSession}
               onClick={() => onCreateSession(role.id)}
             >
-              {creatingSession ? '正在开聊…' : '和他聊聊'}
+              {creatingSession
+                ? (labels?.busyLabel ?? '正在开聊…')
+                : (labels?.emptyCreateLabel ?? '和他聊聊')}
             </button>
           </div>
         ))}
@@ -167,7 +179,9 @@ export function RoleSessionList({
           disabled={creatingSession}
           onClick={() => onCreateSession(role.id)}
         >
-          {creatingSession ? '正在开聊…' : '＋ 新会话'}
+          {creatingSession
+            ? (labels?.busyLabel ?? '正在开聊…')
+            : (labels?.createLabel ?? '＋ 新会话')}
         </button>
       )}
     </div>

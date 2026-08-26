@@ -3,6 +3,7 @@ import type { RoleSummary, SessionSummary } from '../../../shared/domain'
 import { countArchived, groupForSidebar } from './roles-grouping'
 import { RoleCard } from './RoleCard'
 import { SessionRowMenu } from './SessionRowMenu'
+import { ManagerCard } from '../manager/ManagerCard'
 
 /**
  * 角色侧栏(0.2.0):品牌位 / 新建角色 / 角色卡片手风琴 / 归档入口 / 底部(使用统计+设置)。
@@ -19,6 +20,8 @@ interface RoleSidebarProps {
   readonly notice: string | null
   /** 启动迁移失败的中文说明(bootstrap.migrationError);null=一切正常不显示。 */
   readonly migrationError: string | null
+  /** 总管降级(bootstrap.manager 为 null):显示一条克制的警示条,不弹窗不阻塞。 */
+  readonly managerDegraded: boolean
   readonly onClose: () => void
   readonly onToggleRole: (roleId: string) => void
   readonly onOpenSession: (sessionId: string) => void
@@ -109,6 +112,7 @@ export function RoleSidebar({
   open,
   notice,
   migrationError,
+  managerDegraded,
   onClose,
   onToggleRole,
   onOpenSession,
@@ -127,9 +131,24 @@ export function RoleSidebar({
 }: RoleSidebarProps) {
   const { roleGroups, ungroupedSessions } = groupForSidebar(roles, sessions)
   const archivedCount = countArchived(roles, sessions)
-  // 空态与主列表口径一致(B-04):删除未完成的角色不算「还有角色」,它只在归档区出现
-  const noRoles = roles.filter((r) => r.archivedAt === null && r.lifecycle === 'ready').length === 0
+  // 总管(0.3.0):内置角色固定置顶成 ManagerCard,不进普通组;其会话在这里单独取(updatedAt 倒序)
+  const managerRole =
+    roles.find((r) => r.kind === 'manager' && r.archivedAt === null) ?? null
+  const managerSessions =
+    managerRole === null
+      ? []
+      : sessions
+          .filter((s) => s.roleId === managerRole.id && s.archivedAt === null)
+          .slice()
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+  // 空态与主列表口径一致(B-04):删除未完成的角色不算「还有角色」,它只在归档区出现;
+  // 0.3.0 起总管常驻,空态只看「伙伴」(worker)有没有,总管不算伙伴
+  const noRoles =
+    roles.filter(
+      (r) => r.kind !== 'manager' && r.archivedAt === null && r.lifecycle === 'ready',
+    ).length === 0
   const [migrationDismissed, setMigrationDismissed] = useState(false)
+  const [managerBannerDismissed, setManagerBannerDismissed] = useState(false)
 
   return (
     <>
@@ -167,7 +186,44 @@ export function RoleSidebar({
           </div>
         )}
 
+        {managerDegraded && !managerBannerDismissed && (
+          <div className="migration-banner" role="status">
+            <span className="migration-banner-text">总管暂不可用,可正常使用角色。</span>
+            <button
+              type="button"
+              className="migration-banner-close"
+              aria-label="关闭这条提示"
+              onClick={() => setManagerBannerDismissed(true)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         <div className="session-list" role="list">
+          {managerRole !== null && (
+            <ManagerCard
+              role={managerRole}
+              sessions={managerSessions}
+              expanded={expandedRoleId === managerRole.id}
+              containsActive={managerSessions.some((s) => s.id === activeSessionId)}
+              activeSessionId={activeSessionId}
+              creatingSession={sessionBusy}
+              onToggle={onToggleRole}
+              onOpenSession={(id) => {
+                onOpenSession(id)
+                onClose()
+              }}
+              onCreateSession={(roleId) => {
+                onCreateSession(roleId)
+                onClose()
+              }}
+              onRenameSession={onRenameSession}
+              onArchiveSession={onArchiveSession}
+              onDeleteSession={onDeleteSession}
+            />
+          )}
+
           {noRoles && (
             <div className="role-empty-app">
               <div className="role-empty-app-title">先招一位伙伴吧</div>
@@ -178,6 +234,10 @@ export function RoleSidebar({
                 新建角色
               </button>
             </div>
+          )}
+
+          {managerRole !== null && roleGroups.length > 0 && (
+            <div className="sidebar-section-label">伙伴</div>
           )}
 
           {roleGroups.map(({ role, sessions: roleSessions }) => (

@@ -6,7 +6,13 @@ import type {
   BootstrapState,
 } from '../../src/shared/ipc/contracts'
 import type { AgentPushEvent } from '../../src/shared/ipc/events'
-import type { RoleDetail, RoleSummary, UsageDashboard } from '../../src/shared/domain'
+import type {
+  AgentRunDetail,
+  AgentRunSummary,
+  RoleDetail,
+  RoleSummary,
+  UsageDashboard,
+} from '../../src/shared/domain'
 
 /**
  * 契约 mock 桥(M1-04)——渲染进程 UI 开发与单元测试用。
@@ -76,6 +82,19 @@ export class MockBridge implements DaweigeBridge {
     /** 0.2.0 角色演示数据:覆盖 worker 活跃/归档角色、mount missing、会话归档等状态。 */
     const roles: RoleSummary[] = [
       {
+        id: 'sys-xiaozhen',
+        kind: 'manager',
+        displayName: '小柊',
+        templateId: 'manager-built-in',
+        mounts: [],
+        archivedAt: null,
+        lifecycle: 'ready' as const,
+        createdAt: now - 90 * 86_400_000,
+        updatedAt: now - 600_000,
+        sessionCount: 1,
+        activeSessionCount: 1,
+      },
+      {
         id: 'agent-a1b2c3d4e5f6',
         kind: 'worker',
         displayName: '小编',
@@ -136,7 +155,7 @@ export class MockBridge implements DaweigeBridge {
     ]
     const roleDetail: Record<string, RoleDetail> = {
       'agent-a1b2c3d4e5f6': {
-        summary: roles[0]!,
+        summary: roles.find((r) => r.id === 'agent-a1b2c3d4e5f6')!,
         profile: {
           schemaVersion: 1,
           roleId: 'agent-a1b2c3d4e5f6',
@@ -150,8 +169,21 @@ export class MockBridge implements DaweigeBridge {
     }
     const bootstrap: BootstrapState = {
       appVersion: '0.1.0-mock',
+      manager: { roleId: 'sys-xiaozhen', entrySessionId: 'demo-session-manager' },
       roles,
       sessions: [
+        {
+          id: 'demo-session-manager',
+          title: '和小柊聊天',
+          workspacePath: '',
+          roleId: 'sys-xiaozhen',
+          archivedAt: null,
+          providerId: 'kimi-coding',
+          modelId: 'kimi-for-coding',
+          createdAt: now - 7_200_000,
+          updatedAt: now - 600_000,
+          messageCount: 4,
+        },
         {
           id: 'demo-session-1',
           title: '整理下载文件夹',
@@ -404,6 +436,115 @@ export class MockBridge implements DaweigeBridge {
     this.handle('session:delete', () => undefined)
     this.handle('message:abort', () => undefined)
     this.handle('approval:respond', () => undefined)
+    // 0.3.0 派活演示:awaiting(待确认)/ completed(含用量)/ interrupted(中断可追溯)三态
+    const demoRuns: AgentRunSummary[] = [
+      {
+        runId: 'run-a1b2c3d4e5f60718',
+        managerSessionId: 'demo-session-manager',
+        targetRoleId: 'agent-b2c3d4e5f6a7',
+        targetRoleName: '账房',
+        internalSessionId: 'demo-run-internal-1',
+        parentRunId: null,
+        status: 'completed',
+        waitingReason: null,
+        taskBrief: '汇总 D:\\门店报表 下所有门店的月度销售表,输出总额与异常行',
+        allowedWorkspacePaths: ['D:\\门店报表'],
+        usage: {
+          rounds: 6,
+          inputTokens: 48_200,
+          outputTokens: 12_930,
+          cacheReadTokens: 130_022,
+          cacheWriteTokens: 9_400,
+          totalTokens: 200_552,
+        },
+        createdAt: now - 3_600_000,
+        startedAt: now - 3_590_000,
+        completedAt: now - 1_800_000,
+        updatedAt: now - 1_800_000,
+      },
+      {
+        runId: 'run-b2c3d4e5f6a70829',
+        managerSessionId: 'demo-session-manager',
+        targetRoleId: 'agent-a1b2c3d4e5f6',
+        targetRoleName: '小编',
+        internalSessionId: null,
+        parentRunId: null,
+        status: 'awaiting-approval',
+        waitingReason: null,
+        taskBrief: '把 D:\\稿件草稿 里的素材整理成一篇 800 字短文',
+        allowedWorkspacePaths: ['D:\\稿件草稿'],
+        usage: { rounds: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+        createdAt: now - 120_000,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: now - 120_000,
+      },
+      {
+        runId: 'run-c3d4e5f6a7b80931',
+        managerSessionId: 'demo-session-manager',
+        targetRoleId: 'agent-b2c3d4e5f6a7',
+        targetRoleName: '账房',
+        internalSessionId: 'demo-run-internal-3',
+        parentRunId: null,
+        status: 'interrupted',
+        waitingReason: null,
+        taskBrief: '核对上月发票与入库单',
+        allowedWorkspacePaths: ['D:\\门店报表'],
+        usage: { rounds: 2, inputTokens: 9_100, outputTokens: 2_040, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 11_140 },
+        createdAt: now - 2 * 86_400_000,
+        startedAt: now - 2 * 86_400_000 + 10_000,
+        completedAt: null,
+        updatedAt: now - 2 * 86_400_000 + 300_000,
+        failureMessage: '应用上次在派活中途退出,本次没有自动继续',
+      },
+    ]
+    this.handle('agentRun:list', ({ managerSessionId }) =>
+      demoRuns.filter((r) => r.managerSessionId === managerSessionId),
+    )
+    this.handle('agentRun:getDetail', ({ runId }) => {
+      const run = demoRuns.find((r) => r.runId === runId)
+      if (!run) throw new Error(`MockBridge: 未预置派活 ${runId}`)
+      const detail: AgentRunDetail = {
+        run,
+        envelope: {
+          userRequest: '帮我把门店报表汇总一下,列出有异常的行',
+          managerConclusions: ['报表在 D:\\门店报表', '需要总额和异常行两项'],
+          taskBrief: run.taskBrief,
+          acceptanceCriteria: ['给出总额', '列出异常行', '结果保存为新文件'],
+          allowedWorkspacePaths: run.allowedWorkspacePaths,
+        },
+        result:
+          run.status === 'completed'
+            ? {
+                summary: '已汇总 3 家门店,总额 ¥20,370;发现南山店一笔异常折让。',
+                conclusions: ['城中店 ¥7,850', '东门店 ¥6,700', '南山店 ¥5,820'],
+                artifactPaths: ['D:\\门店报表\\汇总结果.md'],
+                unmetCriteria: [],
+                boundaryViolations: [],
+              }
+            : null,
+        childSession:
+          run.internalSessionId === null
+            ? null
+            : {
+                summary: {
+                  id: run.internalSessionId,
+                  title: `派活过程:${run.targetRoleName}`,
+                  workspacePath: run.allowedWorkspacePaths[0] ?? '',
+                  roleId: run.targetRoleId,
+                  archivedAt: null,
+                  providerId: 'kimi-coding',
+                  modelId: 'kimi-for-coding',
+                  createdAt: run.createdAt,
+                  updatedAt: run.updatedAt,
+                  messageCount: 8,
+                },
+                messages: [],
+              },
+        readOnly: true,
+      }
+      return detail
+    })
     return this
   }
 }
@@ -484,5 +625,6 @@ export function demoUsageDashboard(options?: {
           ]
         : [],
     },
+    delegations: { totalTokens: hasData ? 211_692 : 0, runs: [] },
   }
 }

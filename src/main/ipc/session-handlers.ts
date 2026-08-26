@@ -1,8 +1,13 @@
 import { registerHandler, ipcError } from './handler'
 import type { SessionService } from '../storage/session-service'
-import { SessionCreateError, SessionNotFoundError } from '../storage/session-service'
+import {
+  InternalSessionAccessError,
+  SessionCreateError,
+  SessionNotFoundError,
+} from '../storage/session-service'
 import type { AgentService } from '../agent/agent-service'
 import type { ApprovalBroker } from '../agent/approval-broker'
+import type { ManagerCleanupService } from '../manager/manager-cleanup-service'
 
 /**
  * 会话 IPC(M2-06 + M3-04 + 0.2.0 A3)。
@@ -14,6 +19,7 @@ export function registerSessionHandlers(
   service: SessionService,
   agentService?: AgentService,
   approvalBroker?: ApprovalBroker,
+  managerCleanup?: ManagerCleanupService,
 ): void {
   registerHandler('session:create', async ({ roleId, providerId, modelId }) => {
     try {
@@ -27,6 +33,7 @@ export function registerSessionHandlers(
 
   registerHandler('session:open', async ({ sessionId }) => {
     try {
+      await service.assertUserVisibleSession(sessionId)
       const detail = await service.openDetail(sessionId)
       // M3-04:历史消息从 pi Session 恢复(agent 的 transcript 同源)
       const messages = agentService ? await agentService.restoreChatMessages(sessionId) : []
@@ -38,6 +45,7 @@ export function registerSessionHandlers(
 
   registerHandler('session:rename', async ({ sessionId, title }) => {
     try {
+      await service.assertUserVisibleSession(sessionId)
       return await service.rename(sessionId, title)
     } catch (err) {
       throw mapSessionError(err)
@@ -45,6 +53,16 @@ export function registerSessionHandlers(
   })
 
   registerHandler('session:delete', async ({ sessionId }) => {
+    try {
+      await service.assertUserVisibleSession(sessionId)
+    } catch (err) {
+      throw mapSessionError(err)
+    }
+    try {
+      await managerCleanup?.cleanupManagerSession(sessionId)
+    } catch (err) {
+      throw mapSessionError(err)
+    }
     agentService?.disposeAgent(sessionId)
     approvalBroker?.abortAllForSession(sessionId, '会话已删除,本次未执行')
     approvalBroker?.clearSessionGrants(sessionId)
@@ -52,8 +70,10 @@ export function registerSessionHandlers(
   })
 
   registerHandler('session:archive', async ({ sessionId }) => {
-    assertSessionIdle(sessionId, '归档')
     try {
+      await service.assertUserVisibleSession(sessionId)
+      assertSessionIdle(sessionId, '归档')
+      await managerCleanup?.assertManagerSessionIdle(sessionId)
       return await service.setArchived(sessionId, true)
     } catch (err) {
       throw mapSessionError(err)
@@ -62,6 +82,7 @@ export function registerSessionHandlers(
 
   registerHandler('session:restore', async ({ sessionId }) => {
     try {
+      await service.assertUserVisibleSession(sessionId)
       return await service.setArchived(sessionId, false)
     } catch (err) {
       throw mapSessionError(err)
@@ -85,6 +106,12 @@ function mapSessionError(err: unknown): unknown {
   }
   if (err instanceof SessionCreateError) {
     return ipcError('EINVALID_REQUEST', err.message)
+  }
+  if (err instanceof InternalSessionAccessError) {
+    return ipcError('EINVALID_REQUEST', err.message)
+  }
+  if (err instanceof Error && err.name === 'ManagerCleanupBusyError') {
+    return ipcError('ESESSION_BUSY', err.message)
   }
   return err
 }

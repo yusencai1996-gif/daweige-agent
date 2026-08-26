@@ -155,7 +155,7 @@ describe('迁移:与既有角色共存', () => {
   })
 })
 
-describe('codex 复审阻断项整改', () => {
+describe('复审阻断项整改', () => {
   it('B-02 半角色抢救:DB 有行但家目录缺失 → 从 staging 恢复 promote', async () => {
     const ws = await mkdtemp(join(tmpdir(), '半角色-'))
     await seedSession(ws)
@@ -198,7 +198,7 @@ describe('codex 复审阻断项整改', () => {
     for (const r of targets) {
       expect([...r.displayName].length).toBeLessThanOrEqual(24)
     }
-    // 三个名字互不相同(第三批不得与（2）重复——codex 复核未闭合点)
+    // 三个名字互不相同(第三批不得与（2）重复——复核未闭合点)
     expect(new Set(targets.map((r) => r.displayName)).size).toBe(3)
     const names = targets.map((r) => r.displayName).sort()
     expect(names[1]).toBe('长'.repeat(18) + '（2）')

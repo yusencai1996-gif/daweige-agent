@@ -64,6 +64,32 @@ describe('usage-store:插入与幂等', () => {
   it('空数组直接 0,不开事务', async () => {
     expect(await store.insertEvents([], 'live')).toBe(0)
   })
+
+  it('按 session 参数化归集轮次与各类 token，缺失会话补零', async () => {
+    await store.insertEvents([
+      event({ sessionId: 'child-1', inputTokens: 10, outputTokens: 20, cacheReadTokens: 3, cacheWriteTokens: 2, totalTokens: 35 }),
+      event({ sessionId: 'child-1', inputTokens: 5, outputTokens: 6, cacheReadTokens: 1, cacheWriteTokens: 0, totalTokens: 12 }),
+      event({ sessionId: 'other', totalTokens: 999 }),
+    ], 'live')
+    const totals = await store.getSessionTotals(['child-1', 'missing'])
+    expect(totals.get('child-1')).toEqual({
+      rounds: 2,
+      inputTokens: 15,
+      outputTokens: 26,
+      cacheReadTokens: 4,
+      cacheWriteTokens: 2,
+      totalTokens: 47,
+    })
+    expect(totals.get('missing')).toEqual({
+      rounds: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    })
+    expect(await store.getSessionTotals([])).toEqual(new Map())
+  })
 })
 
 describe('usage-store:dashboard 聚合', () => {

@@ -7,6 +7,8 @@ import { countCodePoints } from './count-chars'
 /**
  * 新建角色三步向导(overlay):起名 → 挂载工作文件夹 → 选人设并过目守则。
  * 只有最后一步「招他入伙」发起 role:create,中途取消不留半成品。
+ * 批 2b(PLAN §10.5):守则草稿卡「用这个草稿建角色」带 prefill 进来——只预填
+ * 名字/守则正文,文件夹仍要亲手选、人设仍要亲手点、最终仍要亲手确认。
  */
 
 const GUARDRAILS_RECOMMEND = 2000
@@ -26,6 +28,8 @@ function isMountError(message: string): boolean {
 
 interface RoleCreateWizardProps {
   readonly bridge: DaweigeBridge
+  /** 守则草稿预填(批 2b):名字与守则正文填好等用户过目;null/缺省 = 空白向导。 */
+  readonly prefill?: { readonly displayName: string; readonly guardrails: string } | null
   readonly onCancel: () => void
   /** 返回 ok:false 时带人话消息,向导停在当前步不丢已填内容。 */
   readonly onSubmit: (input: CreateRoleInput) => Promise<{ readonly ok: boolean; readonly message?: string }>
@@ -33,14 +37,14 @@ interface RoleCreateWizardProps {
 
 type Step = 1 | 2 | 3
 
-export function RoleCreateWizard({ bridge, onCancel, onSubmit }: RoleCreateWizardProps) {
+export function RoleCreateWizard({ bridge, prefill, onCancel, onSubmit }: RoleCreateWizardProps) {
   const [step, setStep] = useState<Step>(1)
-  const [name, setName] = useState('')
+  const [name, setName] = useState(prefill?.displayName ?? '')
   const [workspace, setWorkspace] = useState<string | null>(null)
   const [templates, setTemplates] = useState<readonly RoleTemplate[] | null>(null)
   const [templatesError, setTemplatesError] = useState<string | null>(null)
   const [templateId, setTemplateId] = useState<RoleTemplate['id'] | null>(null)
-  const [guardrails, setGuardrails] = useState('')
+  const [guardrails, setGuardrails] = useState(prefill?.guardrails ?? '')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -87,7 +91,8 @@ export function RoleCreateWizard({ bridge, onCancel, onSubmit }: RoleCreateWizar
 
   const pickTemplate = (tpl: RoleTemplate) => {
     setTemplateId(tpl.id)
-    setGuardrails(tpl.guardrailsDraft)
+    // 草稿预填模式(批 2b):人设只定身份骨架,不覆盖小柊起草、用户已过目中的守则正文
+    if (prefill == null) setGuardrails(tpl.guardrailsDraft)
   }
 
   const submit = async () => {

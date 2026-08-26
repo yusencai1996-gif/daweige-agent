@@ -63,4 +63,13 @@ export interface UsageDashboard {
       readonly totalTokens: number
     }[]
   }
+
+  /**
+   * 派活用量(0.3.0):既有总量的解释维度,不是第五份计费口径——
+   * 子 agent 的 token 已按 internal sessionId 计入上面四区,这里只是按 run 归集展示。
+   */
+  readonly delegations: {
+    readonly totalTokens: number
+    readonly runs: readonly import('./manager').AgentRunSummary[]
+  }
 }

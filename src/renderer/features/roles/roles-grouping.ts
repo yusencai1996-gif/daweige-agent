@@ -58,8 +58,9 @@ export function groupForSidebar(
   roles: readonly RoleSummary[],
   sessions: readonly SessionSummary[],
 ): SidebarGroups {
+  // 0.3.0:总管(kind==='manager')由 ManagerCard 固定置顶展示,显式排除,不进普通组参与排序
   const activeRoles = roles
-    .filter(isActiveRole)
+    .filter((r) => isActiveRole(r) && r.kind !== 'manager')
     .slice()
     .sort((a, b) => a.createdAt - b.createdAt)
   const allRoleIds = new Set(roles.map((r) => r.id))

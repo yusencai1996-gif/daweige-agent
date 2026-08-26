@@ -121,7 +121,7 @@ describe('领域模型:序列化/反序列化', () => {
     }
     const noDate: MemoryEntry = {
       id: 'mem-3',
-      text: '老板喜欢喝绿茶',
+      text: '用户喜欢喝绿茶',
       title: '饮茶偏好',
       category: '偏好',
       createdAt: 3,

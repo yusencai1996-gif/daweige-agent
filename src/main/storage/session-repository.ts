@@ -21,6 +21,8 @@ export interface DaweigeSessionAppMeta {
   providerId: ProviderId
   modelId: string
   updatedAt: number
+  /** pi 库自身的纵深标记；角色 binding 丢失时仍能识别 child 会话。 */
+  internal?: true
 }
 
 /** 只读遍历的 message entry 行(使用统计回填专用)。 */
@@ -75,6 +77,7 @@ export class SessionRepository {
     cwd: string
     providerId: ProviderId
     modelId: string
+    internal?: boolean
   }): Promise<Session<SqliteSessionMetadata>> {
     return this.repo.create({
       cwd: input.cwd,
@@ -83,6 +86,7 @@ export class SessionRepository {
           providerId: input.providerId,
           modelId: input.modelId,
           updatedAt: Date.now(),
+          ...(input.internal ? { internal: true as const } : {}),
         } satisfies DaweigeSessionAppMeta,
       },
     })
@@ -105,7 +109,7 @@ export class SessionRepository {
   }
 
   /**
-   * 惰性分页只读遍历全部会话的 message entries(使用统计回填专用,codex 复审 B-01 整改)。
+   * 惰性分页只读遍历全部会话的 message entries(使用统计回填专用,复审 B-01 整改)。
    * 独立只读连接直查 pi 的 entries 表:不 open Session、不取 writer lease;
    * 每页只取 pageSize 行,消费方在批间让出事件循环即不阻塞主线程、内存受控。
    * 行级容错:payload 损坏的行跳过,单行垃圾不中断遍历。

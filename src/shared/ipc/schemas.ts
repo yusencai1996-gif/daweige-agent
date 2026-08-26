@@ -20,8 +20,14 @@ const ProviderIdSchema = Type.Union([
 
 const SessionIdSchema = Type.String({ minLength: 1, maxLength: 64 })
 
-/** 角色 ID:agent- + 12 位小写十六进制。sys- 前缀(总管预留)与任意伪造格式均被拒。 */
+/** 角色 ID:agent- + 12 位小写十六进制。任意伪造格式(含 sys- 前缀)均被拒。 */
 const RoleIdSchema = Type.String({ pattern: '^agent-[a-f0-9]{12}$' })
+
+/** 会话挂靠的角色:普通 worker 或内置总管字面量(0.3.0);其余 sys-* 一律拒绝。 */
+const SessionCreateRoleSchema = Type.Union([RoleIdSchema, Type.Literal('sys-xiaozhen')])
+
+/** 派活运行 ID:run- + 16 位小写十六进制(主进程生成)。 */
+const AgentRunIdSchema = Type.String({ pattern: '^run-[a-f0-9]{16}$' })
 
 /** 角色显示名:1~24 字,首尾不允许空白(trim 由 schema 拒绝,主进程不再静默修剪)。 */
 const RoleDisplayNameSchema = Type.String({
@@ -60,7 +66,7 @@ const NoDotDotSegment = Type.String({
 
 export const SessionCreateRequestSchema = Type.Object(
   {
-    roleId: RoleIdSchema,
+    roleId: SessionCreateRoleSchema,
     providerId: ProviderIdSchema,
     modelId: Type.String({ minLength: 1, maxLength: 100 }),
   },
@@ -92,6 +98,18 @@ export const SessionArchiveRequestSchema = Type.Object(
 
 export const SessionRestoreRequestSchema = Type.Object(
   { sessionId: SessionIdSchema },
+  strict,
+)
+
+// ---------- 派活(0.3.0)----------
+
+export const AgentRunListRequestSchema = Type.Object(
+  { managerSessionId: SessionIdSchema },
+  strict,
+)
+
+export const AgentRunGetDetailRequestSchema = Type.Object(
+  { runId: AgentRunIdSchema },
   strict,
 )
 
@@ -265,6 +283,8 @@ export const REQUEST_SCHEMAS: Readonly<Partial<Record<ContractChannel, TObject>>
   'session:delete': SessionDeleteRequestSchema,
   'session:archive': SessionArchiveRequestSchema,
   'session:restore': SessionRestoreRequestSchema,
+  'agentRun:list': AgentRunListRequestSchema,
+  'agentRun:getDetail': AgentRunGetDetailRequestSchema,
   'message:send': MessageSendRequestSchema,
   'message:abort': MessageAbortRequestSchema,
   'approval:respond': ApprovalRespondRequestSchema,
@@ -405,4 +425,12 @@ export type _BindSessionArchive = BindCheck<
 export type _BindSessionRestore = BindCheck<
   Static<typeof SessionRestoreRequestSchema>,
   import('./contracts').IpcRequestMap['session:restore']['request']
+>
+export type _BindAgentRunList = BindCheck<
+  Static<typeof AgentRunListRequestSchema>,
+  import('./contracts').IpcRequestMap['agentRun:list']['request']
+>
+export type _BindAgentRunGetDetail = BindCheck<
+  Static<typeof AgentRunGetDetailRequestSchema>,
+  import('./contracts').IpcRequestMap['agentRun:getDetail']['request']
 >

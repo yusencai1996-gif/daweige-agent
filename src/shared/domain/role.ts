@@ -16,17 +16,18 @@ export type RoleId = string
  */
 export type RoleKind = 'worker' | 'manager' | 'legacy-unresolved'
 
-/** 角色人设模板 ID。legacy-empty 仅迁移生成,创建向导不接受。 */
+/** 角色人设模板 ID。legacy-empty 仅迁移生成;manager-built-in 仅内置总管种子化,二者都不进创建向导。 */
 export type RoleTemplateId =
   | 'writer'
   | 'accountant'
   | 'file-steward'
   | 'notebook'
   | 'legacy-empty'
+  | 'manager-built-in'
 
-/** 创建向导可选的人设模板(role:listTemplates 返回;不含 legacy-empty)。 */
+/** 创建向导可选的人设模板(role:listTemplates 返回;不含 legacy-empty 与 manager-built-in)。 */
 export interface RoleTemplate {
-  readonly id: Exclude<RoleTemplateId, 'legacy-empty'>
+  readonly id: Exclude<RoleTemplateId, 'legacy-empty' | 'manager-built-in'>
   /** 中文名,如"写稿助手"。 */
   readonly name: string
   /** 一句话简介,向导模板卡展示。 */

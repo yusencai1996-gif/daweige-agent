@@ -55,7 +55,7 @@ describe('MemoryStore(M5-01)', () => {
   it('搜索:关键词命中标题/原文/类别', async () => {
     const store = new MemoryStore(join(dir, 'm.json'))
     await store.add({ text: '我妈生日是三月五号', title: '妈妈生日', category: '生日', date: { kind: 'recurring', month: 3, day: 5 } })
-    await store.add({ text: '老板喜欢喝绿茶', title: '饮茶偏好', category: '偏好' })
+    await store.add({ text: '用户喜欢喝绿茶', title: '饮茶偏好', category: '偏好' })
     expect(await store.search('生日')).toHaveLength(1)
     expect(await store.search('绿茶')).toHaveLength(1)
     expect(await store.search('不存在的事')).toHaveLength(0)

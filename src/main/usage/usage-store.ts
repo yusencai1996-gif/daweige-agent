@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { UsageDashboard } from '../../shared/domain/usage'
+import type { AgentRunUsage } from '../../shared/domain/manager'
 import { localDateFor, type ParsedUsageEvent } from './usage-parser'
 
 /**
@@ -163,7 +164,7 @@ export class UsageStore {
     })
   }
 
-  /** 整页统计快照:四类聚合在只读事务内完成——跨进程并发写下也保证同源一致(codex 复审 B-03)。 */
+  /** 整页统计快照:四类聚合在只读事务内完成——跨进程并发写下也保证同源一致(复审 B-03)。 */
   buildDashboard(nowMs: number, timeZone: string): Promise<UsageDashboard> {
     return this.enqueue(() => {
       this.db.exec('BEGIN DEFERRED')
@@ -175,6 +176,50 @@ export class UsageStore {
         this.db.exec('ROLLBACK')
         throw err
       }
+    })
+  }
+
+  /** 按 internal session 聚合派活用量。参数分批绑定，空会话也显式补零。 */
+  getSessionTotals(sessionIds: readonly string[]): Promise<Map<string, AgentRunUsage>> {
+    const unique = [...new Set(sessionIds)]
+    const zero = (): AgentRunUsage => ({
+      rounds: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    })
+    if (unique.length === 0) return Promise.resolve(new Map())
+    return this.enqueue(() => {
+      const result = new Map(unique.map((id) => [id, zero()]))
+      const batchSize = 500
+      for (let offset = 0; offset < unique.length; offset += batchSize) {
+        const batch = unique.slice(offset, offset + batchSize)
+        const placeholders = batch.map(() => '?').join(',')
+        const rows = this.db
+          .prepare(
+            `SELECT session_id AS id, COUNT(*) AS rounds,
+                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                    COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                    COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+             FROM usage_events WHERE session_id IN (${placeholders}) GROUP BY session_id`,
+          )
+          .all(...batch) as Array<Record<string, string | number>>
+        for (const row of rows) {
+          result.set(String(row.id), {
+            rounds: Number(row.rounds),
+            inputTokens: Number(row.input_tokens),
+            outputTokens: Number(row.output_tokens),
+            cacheReadTokens: Number(row.cache_read_tokens),
+            cacheWriteTokens: Number(row.cache_write_tokens),
+            totalTokens: Number(row.total_tokens),
+          })
+        }
+      }
+      return result
     })
   }
 
@@ -276,6 +321,8 @@ export class UsageStore {
         series: [...series.values()],
       },
       models: { totalTokens, items: modelItems },
+      // 0.3.0 契约过渡:按 run 归集由后端线接入(PLAN §9);子 agent token 已含在上面四区
+      delegations: { totalTokens: 0, runs: [] },
     }
   }
 

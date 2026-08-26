@@ -1,5 +1,5 @@
 /**
- * 文件操作确认卡片领域模型。
+ * 确认卡片领域模型(0.1 文件操作 + 0.3.0 派活)。
  * 铁律:卡片说人话(title/description 由主进程生成中文摘要),
  * 不向渲染进程透出代码 diff。
  */
@@ -13,11 +13,12 @@ export type ApprovalKind =
   | 'mkdir' // 新建目录
   | 'outside-read' // 读取工作文件夹外的文件
   | 'role-rules-edit' // AI 修改当前角色守则(永远逐次确认,不吃任何会话级授权)
+  | 'delegation' // 总管派活确认(0.3.0;同意才派出子 agent,不吃任何会话级授权)
 
-export interface ApprovalRequest {
-  /** 确认 ID:主进程生成的唯一随机串;伪造/重复响应会被拒绝。 */
+/** 文件/守则操作确认卡(0.1~0.2 既有形态,字段不变)。 */
+export interface FileApprovalRequest {
   readonly id: string
-  readonly kind: ApprovalKind
+  readonly kind: Exclude<ApprovalKind, 'delegation'>
   /** 人话标题,如"我要移动 38 个文件"。 */
   readonly title: string
   /** 人话说明:将对哪些文件做什么、影响多少项、是否可恢复。 */
@@ -36,6 +37,29 @@ export interface ApprovalRequest {
   readonly toolName?: string
   readonly createdAt: number
 }
+
+/**
+ * 派活确认卡(0.3.0):小柊请求派出子角色,用户点"同意派出"才真正 spawn。
+ * 渲染层不在文件卡浮层渲染它,而是并入对应派活卡(PLAN §6.2/§10.4);
+ * 响应仍走 approval:respond(approve=派出,reject=不派)。
+ */
+export interface DelegationApprovalRequest {
+  readonly id: string
+  readonly kind: 'delegation'
+  readonly runId: import('./manager').AgentRunId
+  readonly targetRoleId: string
+  readonly targetRoleName: string
+  readonly taskBrief: string
+  readonly allowedWorkspacePaths: readonly string[]
+  readonly acceptanceCriteria: readonly string[]
+  /** 人话标题,如"派给账房:汇总销售表"。 */
+  readonly title: string
+  /** 人话说明:任务简报 + 允许操作的文件夹摘要。 */
+  readonly description: string
+  readonly createdAt: number
+}
+
+export type ApprovalRequest = FileApprovalRequest | DelegationApprovalRequest
 
 /**
  * approve:本次放行

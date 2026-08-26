@@ -35,6 +35,14 @@ export function registerWorkspaceHandlers(
   })
 
   registerHandler('workspace:importFiles', async ({ sessionId }): Promise<readonly ImportedFile[]> => {
+    try {
+      await sessionService.assertUserVisibleSession(sessionId)
+    } catch (err) {
+      throw ipcError(
+        'EINVALID_REQUEST',
+        err instanceof Error ? err.message : '内部任务会话不能通过普通入口导入文件',
+      )
+    }
     const summaries = await sessionService.listSummaries()
     const workspacePath = summaries.find((s) => s.id === sessionId)?.workspacePath
     if (!workspacePath || !existsSync(workspacePath)) {

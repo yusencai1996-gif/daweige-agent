@@ -80,6 +80,26 @@ describe('会话与角色绑定', () => {
     expect(detail.summary.id).toBe(a.summary.id)
   })
 
+  it('internal 会话不进用户列表(S-01/0.3.0 前置):visibility=internal 被过滤,数据仍可打开', async () => {
+    const a = await service.create({ roleId: roleFx.roleId, providerId: 'kimi-coding', modelId: 'm' })
+    const b = await service.create({ roleId: roleFx.roleId, providerId: 'kimi-coding', modelId: 'm' })
+    // 把 b 模拟成子 agent 运行会话:binding 改 internal(bindSession 是 INSERT OR IGNORE,先删再插)
+    await roleFx.roleRepository.deleteBinding(b.summary.id)
+    await roleFx.roleRepository.bindSession({
+      sessionId: b.summary.id,
+      roleId: roleFx.roleId,
+      workspacePathSnapshot: b.summary.workspacePath ?? '',
+      archivedAt: null,
+      visibility: 'internal',
+      source: 'repair',
+    })
+    const list = await service.listSummaries()
+    expect(list.map((s) => s.id)).toEqual([a.summary.id])
+    // internal 会话本身数据完好(0.3.0 子 agent 会话详情入口用)
+    const detail = await service.openDetail(b.summary.id)
+    expect(detail.summary.id).toBe(b.summary.id)
+  })
+
   it('legacy-unresolved 角色拒绝新建会话', async () => {
     const roleRepo = roleFx.roleRepository
     // 造一个 unresolved 角色(直接入库,模拟迁移产物)

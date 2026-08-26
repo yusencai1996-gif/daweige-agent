@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { RoleDetail } from '../../../shared/domain'
 import type { SaveGuardrailsResult } from '../../app/use-app-controller'
 import { countCodePoints } from './count-chars'
@@ -7,6 +7,8 @@ import { countCodePoints } from './count-chars'
  * 守则编辑整页(MainPane):加载 role:get → textarea 编辑 → 带 expectedVersion 保存。
  * 保存后从下一条消息开始生效;版本冲突时先提示、再由 controller 重拉覆盖。
  * 未保存修改:返回和「从侧栏切另一角色守则页」都要二次确认(后者由 App 挂起切换)。
+ * 批 2b(PLAN §10.5):守则草稿卡「过目并保存」带 prefill 进来——只本地预填,
+ * 用户亲手点保存才走 onSave(role:updateGuardrails),预填本身不发任何写 IPC。
  */
 
 const GUARDRAILS_RECOMMEND = 2000
@@ -15,6 +17,8 @@ const GUARDRAILS_MAX = 6000
 interface RoleRulesViewProps {
   readonly detail: RoleDetail | null
   readonly loading: boolean
+  /** 守则草稿预填(批 2b):非 null 时,首次加载完成后填进编辑框;普通「编辑守则」恒为 null。 */
+  readonly prefill: string | null
   readonly onSave: (guardrails: string) => Promise<SaveGuardrailsResult>
   readonly onBack: () => void
   /** 草稿脏状态上报(App 用来拦「切另一角色守则页」)。 */
@@ -28,6 +32,7 @@ interface RoleRulesViewProps {
 export function RoleRulesView({
   detail,
   loading,
+  prefill,
   onSave,
   onBack,
   onDirtyChange,
@@ -38,17 +43,21 @@ export function RoleRulesView({
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirmLeave, setConfirmLeave] = useState(false)
+  /** 草稿预填只应用一次(本次打开);之后的版本冲突重拉仍以服务端正文为准,不回冲用户编辑。 */
+  const prefillAppliedRef = useRef(false)
 
   // detail 加载完成/版本冲突重拉后,同步草稿(冲突场景:提示已在 notice 给出,这里直接覆盖)
   const detailKey = detail ? `${detail.summary.id}:${detail.guardrailsVersion}` : null
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   useEffect(() => {
     if (detail !== null && detailKey !== loadedKey) {
-      setDraft(detail.guardrails)
+      const usePrefill = !prefillAppliedRef.current && prefill !== null
+      prefillAppliedRef.current = true
+      setDraft(usePrefill ? prefill : detail.guardrails)
       setLoadedKey(detailKey)
       setConfirmLeave(false)
     }
-  }, [detail, detailKey, loadedKey])
+  }, [detail, detailKey, loadedKey, prefill])
 
   const dirty = detail !== null && draft !== detail.guardrails
   // 码点口径(S-03):与后端 checkGuardrails 一致,emoji 不会被多数一倍

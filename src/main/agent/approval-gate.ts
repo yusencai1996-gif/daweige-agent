@@ -1,6 +1,7 @@
 import type { BeforeToolCallContext, BeforeToolCallResult } from '@earendil-works/pi-agent-core'
-import type { ApprovalKind } from '../../shared/domain/approval'
+import type { FileApprovalRequest } from '../../shared/domain/approval'
 import type { PathPolicy } from '../files/path-policy'
+import { isStrictDelegationPathPolicy } from '../files/path-policy'
 import type { ApprovalBroker } from './approval-broker'
 
 /**
@@ -26,7 +27,8 @@ const WRITE_TOOLS = new Set([
   'make_directory',
 ])
 
-const KIND_BY_TOOL: Record<string, ApprovalKind> = {
+/** 工具名 → 文件卡类别(delegation 不在此表,由 orchestrator 专属入口发起)。 */
+const KIND_BY_TOOL: Record<string, FileApprovalRequest['kind']> = {
   write_file: 'write',
   write_docx: 'write',
   write_workbook: 'write',
@@ -44,8 +46,12 @@ export interface ApprovalGateDeps {
   broker: ApprovalBroker
   sessionId: string
   policy: PathPolicy
+  /** child 卡的展示会话;owner 始终仍是 sessionId。 */
+  surfaceSessionId?: string
   /** 当前会话所属角色的显示名(守则确认卡用;查不到时卡片退化为"当前角色")。 */
   getRoleDisplayName?: () => Promise<string | undefined>
+  /** delegated child 的 run 状态联动；普通会话不提供。 */
+  onApprovalPending?: (waiting: boolean) => void | Promise<void>
 }
 
 export function createApprovalGate(deps: ApprovalGateDeps) {
@@ -63,8 +69,11 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         const oldStr = typeof args['old_string'] === 'string' ? (args['old_string'] as string) : ''
         const newStr = typeof args['new_string'] === 'string' ? (args['new_string'] as string) : ''
         const roleName = (await deps.getRoleDisplayName?.()) ?? '当前角色'
-        const outcome = await deps.broker.request({
+        const outcome = await withApprovalLifecycle(deps, () => deps.broker.request({
           sessionId: deps.sessionId,
+          ...(deps.surfaceSessionId !== undefined
+            ? { surfaceSessionId: deps.surfaceSessionId }
+            : {}),
           kind: 'role-rules-edit',
           toolCallId: context.toolCall.id,
           toolName: name,
@@ -74,20 +83,27 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
           samplePaths: [],
           recoverable: false,
           outsideWorkspace: false,
-        })
+        }))
         return settle(outcome)
       }
 
     if (READ_TOOLS.has(name)) {
       const path = pickPath(args)
       if (!path) return undefined // 参数异常交给 schema 校验
+      if (isStrictDelegationPathPolicy(deps.policy)) {
+        const strict = await deps.policy.preflight([path], name, 'read')
+        return strict.allowed ? undefined : { block: true, reason: strict.reason }
+      }
       const { zone } = await deps.policy.classify(path)
       if (zone === 'app-internal') {
         return { block: true, reason: '应用内部数据不允许读取。' }
       }
       if (zone === 'workspace') return undefined
-      const outcome = await deps.broker.request({
+      const outcome = await withApprovalLifecycle(deps, () => deps.broker.request({
         sessionId: deps.sessionId,
+        ...(deps.surfaceSessionId !== undefined
+          ? { surfaceSessionId: deps.surfaceSessionId }
+          : {}),
         kind: 'outside-read',
         toolCallId: context.toolCall.id,
         title: '我要读取工作文件夹外的文件',
@@ -96,7 +112,7 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         samplePaths: [path],
         recoverable: true,
         outsideWorkspace: true,
-      })
+      }))
       return settle(outcome)
     }
 
@@ -107,6 +123,10 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
       const invalid = firstInvalidWriteTarget(checkPaths, deps.policy)
       if (invalid) {
         return { block: true, reason: `这次操作没法执行:${invalid}` }
+      }
+      if (isStrictDelegationPathPolicy(deps.policy)) {
+        const strict = await deps.policy.preflight(checkPaths, name, 'write')
+        if (!strict.allowed) return { block: true, reason: strict.reason }
       }
       // 批量写:预检全部目标区域(受影响项 + 目标目录)
       const zones = await Promise.all(checkPaths.map((p) => deps.policy.classify(p)))
@@ -120,8 +140,11 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         return undefined
       }
       const summary = buildSummary(name, args, affected.length, outside)
-      const outcome = await deps.broker.request({
+      const outcome = await withApprovalLifecycle(deps, () => deps.broker.request({
         sessionId: deps.sessionId,
+        ...(deps.surfaceSessionId !== undefined
+          ? { surfaceSessionId: deps.surfaceSessionId }
+          : {}),
         kind: KIND_BY_TOOL[name] ?? 'write',
         toolCallId: context.toolCall.id,
         toolName: name,
@@ -131,12 +154,24 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         samplePaths: affected,
         recoverable: name === 'delete_paths', // 删除走回收站
         outsideWorkspace: outside,
-      })
+      }))
       return settle(outcome)
     }
 
     // 未分类工具(不应发生):保守拒绝
     return { block: true, reason: `工具 ${name} 未登记,已阻止。` }
+  }
+}
+
+async function withApprovalLifecycle<T>(
+  deps: ApprovalGateDeps,
+  request: () => Promise<T>,
+): Promise<T> {
+  await deps.onApprovalPending?.(true)
+  try {
+    return await request()
+  } finally {
+    await deps.onApprovalPending?.(false)
   }
 }
 

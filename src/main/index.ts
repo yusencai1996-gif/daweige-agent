@@ -11,6 +11,11 @@ import { SessionService } from './storage/session-service'
 import { RoleRepository } from './roles/role-repository'
 import { RoleService } from './roles/role-service'
 import { RoleMigration } from './roles/role-migration'
+import { ManagerSeedService } from './roles/system-manager'
+import {
+  SYSTEM_MANAGER_ROLE_ID,
+  type ManagerBootstrap,
+} from '../shared/domain/manager'
 import { ProviderRegistry } from './agent/provider-registry'
 import { ConnectivityService } from './agent/connectivity-service'
 import { AgentService } from './agent/agent-service'
@@ -20,7 +25,7 @@ import { buildTools } from './agent/tool-registry'
 import { createMemoryTools } from './agent/tools/memory-tools'
 import { createEditRoleGuardrailsTool } from './agent/tools/edit-role-guardrails'
 import type { RolePromptLayer } from './agent/prompt-composer'
-import { PathPolicy } from './files/path-policy'
+import { PathPolicy, StrictDelegationPathPolicy } from './files/path-policy'
 import { FileOps } from './files/file-ops'
 import { MemoryStore } from './memory/memory-store'
 import { ReminderService } from './memory/reminder-service'
@@ -41,6 +46,16 @@ import { registerWindowHandlers } from './ipc/window-handlers'
 import { registerMemoryHandlers } from './ipc/memory-handlers'
 import { registerUpdateHandlers } from './ipc/update-handlers'
 import { registerUsageHandlers } from './ipc/usage-handlers'
+import { registerAgentRunHandlers } from './ipc/agent-run-handlers'
+import { WorkerRunner } from './manager/worker-runner'
+import { ManagerOrchestrator } from './manager/manager-orchestrator'
+import { AgentRunQueryService } from './manager/agent-run-query-service'
+import { AgentRunRecovery } from './manager/agent-run-recovery'
+import { ManagerCleanupService } from './manager/manager-cleanup-service'
+import { ScriptedAgentTurnRunner } from './manager/scripted-agent-turn-runner'
+import type { AgentTurnRunner } from './agent/agent-service'
+import type { AssistantMessage } from '@earendil-works/pi-ai'
+import { currentIanaTimeZone, localDateFor } from './usage/usage-parser'
 import { UpdateService } from './update/update-service'
 import { WorkspaceAuthorization } from './ipc/workspace-auth'
 
@@ -77,6 +92,7 @@ let sessionRepository: SessionRepository | undefined
 let roleRepositoryRef: RoleRepository | undefined
 let approvalBrokerRef: ApprovalBroker | undefined
 let usageServiceRef: UsageService | undefined
+let managerOrchestratorRef: ManagerOrchestrator | undefined
 let quitting = false
 
 app.whenReady().then(async () => {
@@ -97,7 +113,7 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[roles] 角色库初始化失败,本次运行关闭角色功能:', err instanceof Error ? err.message : err)
   }
-  const sessionService = new SessionService(sessionRepository, roleRepository, roleService)
+  const sessionService = new SessionService(sessionRepository, roleRepository, roleService, userData)
   const providerRegistry = new ProviderRegistry(credentialStore)
   const connectivityService = new ConnectivityService(providerRegistry, credentialStore)
 
@@ -108,9 +124,10 @@ app.whenReady().then(async () => {
   }
   // 使用统计:库损坏/不可建时整体降级(只关统计功能,绝不拦应用启动)——后端复审整改项
   let usageService: UsageService | undefined
+  let usageStore: UsageStore | undefined
   const repo = sessionRepository
   try {
-    const usageStore = new UsageStore(join(userData, 'data', 'usage.sqlite'))
+    usageStore = new UsageStore(join(userData, 'data', 'usage.sqlite'))
     usageService = new UsageService(usageStore, {
       emitEvent: emitAgentEvent,
       iterateMessageEntries: () => repo.iterateMessageEntries(),
@@ -133,6 +150,7 @@ app.whenReady().then(async () => {
   const workspaceAuth = new WorkspaceAuthorization()
   const memoryStore = new MemoryStore(join(userData, 'data', 'memories.json'))
   const reminderService = new ReminderService(() => memoryStore.load())
+  let managerOrchestrator: ManagerOrchestrator | undefined
   const agentService = new AgentService({
     models: {
       getModel: (providerId, modelId) =>
@@ -145,24 +163,75 @@ app.whenReady().then(async () => {
     },
     sessionService,
     emitEvent: emitAgentEvent,
-    toolchain: ({ sessionId, workspacePath }) => {
-      const policy = new PathPolicy(workspacePath, userData)
+    toolchain: async ({ sessionId, workspacePath }) => {
+      const binding = roleRepository
+        ? await roleRepository.getBinding(sessionId)
+        : undefined
+      const row = binding && roleRepository
+        ? await roleRepository.getRoleRow(binding.roleId)
+        : undefined
+      if (row?.kind === 'manager') {
+        const policy = new PathPolicy(workspacePath, userData)
+        const ops = new FileOps(policy)
+        return {
+          tools: buildTools(
+            {
+              policy,
+              ops,
+              trash: (p) => shell.trashItem(p),
+              memoryTools: () => createMemoryTools(memoryStore),
+              managerTools: () => managerOrchestrator?.toolsForSession(sessionId) ?? [],
+            },
+            'manager',
+          ),
+        }
+      }
+
+      const delegatedRun =
+        binding?.visibility === 'internal' && roleRepository
+          ? await roleRepository.getAgentRunByInternalSession(sessionId)
+          : undefined
+      // internal 会话只能通过已绑定 run 执行;孤儿 internal fail closed。
+      if (binding?.visibility === 'internal' && !delegatedRun) return { tools: [] }
+      const policy = delegatedRun
+        ? new StrictDelegationPathPolicy(
+            delegatedRun.envelope.allowedWorkspacePaths,
+            userData,
+            async (violation) => {
+              if (!roleRepository) return
+              await roleRepository.appendAgentRunBoundaryViolation(
+                delegatedRun.runId,
+                violation,
+              )
+              await managerOrchestrator?.noteBoundaryViolation(sessionId)
+            },
+          )
+        : new PathPolicy(workspacePath, userData)
       const ops = new FileOps(policy)
       return {
-        tools: buildTools({
-          policy,
-          ops,
-          trash: (p) => shell.trashItem(p),
-          memoryTools: () => createMemoryTools(memoryStore),
-          roleRulesTools: () =>
-            roleRepository && roleService
-              ? [createEditRoleGuardrailsTool({ sessionId, roleRepository, roleService })]
-              : [],
-        }),
+        tools: buildTools(
+          {
+            policy,
+            ops,
+            trash: (p) => shell.trashItem(p),
+            memoryTools: () => createMemoryTools(memoryStore),
+            roleRulesTools: () =>
+              roleRepository && roleService
+                ? [createEditRoleGuardrailsTool({ sessionId, roleRepository, roleService })]
+                : [],
+          },
+          delegatedRun ? 'delegated-worker' : 'regular-worker',
+        ),
         beforeToolCall: createApprovalGate({
           broker: approvalBroker,
           sessionId,
           policy,
+          ...(delegatedRun
+            ? { surfaceSessionId: delegatedRun.managerSessionId }
+            : {}),
+          ...(delegatedRun
+            ? { onApprovalPending: (waiting: boolean) => managerOrchestrator?.markChildApproval(sessionId, waiting) }
+            : {}),
           getRoleDisplayName: roleRepository
             ? async () => {
                 const binding = await roleRepository!.getBinding(sessionId)
@@ -180,8 +249,9 @@ app.whenReady().then(async () => {
           try {
             const binding = await roleRepository.getBinding(sessionId)
             if (!binding) return undefined
-            const { text } = await roleService.readGuardrailsOf(binding.roleId)
             const row = await roleRepository.getRoleRow(binding.roleId)
+            if (row?.kind === 'manager') return undefined
+            const { text } = await roleService.readGuardrailsOf(binding.roleId)
             return {
               roleId: binding.roleId,
               displayName: row?.displayName ?? '',
@@ -199,6 +269,42 @@ app.whenReady().then(async () => {
             }
             throw err
           }
+        }
+      : undefined,
+    orchestrationPrompt: roleRepository
+      ? async (sessionId) => {
+          if (!roleRepository) return {}
+          const binding = await roleRepository.getBinding(sessionId)
+          if (!binding) return {}
+          if (binding.roleId === SYSTEM_MANAGER_ROLE_ID && binding.visibility === 'user') {
+            if (!roleService) return { manager: { workers: [] } }
+            const summaries = await roleService.listSummaries()
+            return {
+              manager: {
+                workers: summaries.map((summary) => ({
+                  roleId: summary.id,
+                  displayName: summary.displayName,
+                  templateId: summary.templateId,
+                  kind: summary.kind,
+                  lifecycle: summary.lifecycle,
+                  archivedAt: summary.archivedAt,
+                  mounts: summary.mounts.map((mount) => ({
+                    workspacePath: mount.workspacePath,
+                    availability: mount.availability,
+                  })),
+                })),
+              },
+            }
+          }
+          if (binding.visibility === 'internal') {
+            const run = await roleRepository.getAgentRunByInternalSession(sessionId)
+            if (!run) return {}
+            return {
+              delegation: { envelope: run.envelope },
+              workspacePaths: run.envelope.allowedWorkspacePaths,
+            }
+          }
+          return {}
         }
       : undefined,
     contextNotes: async () => {
@@ -232,6 +338,10 @@ app.whenReady().then(async () => {
   // 0.2.0 启动迁移(PLAN §4.1):会话库初始化后、IPC/窗口前;
   // 失败不拦启动(角色降级为空,会话照旧可开);migrationError 经 bootstrap 告知用户(专审整改)
   let migrationError: string | undefined
+  let managerBootstrap: ManagerBootstrap | null = null
+  let agentRunQuery: AgentRunQueryService | undefined
+  let managerCleanup: ManagerCleanupService | undefined
+  let e2eAwaitingRunIds: string[] = []
   if (roleRepository && roleService) {
     try {
       const migration = new RoleMigration(userData, roleRepository, sessionRepository)
@@ -249,6 +359,93 @@ app.whenReady().then(async () => {
       sessionService.deactivateRoles()
     }
     if (roleService) {
+      agentRunQuery = new AgentRunQueryService(
+        roleRepository,
+        sessionService,
+        agentService,
+        usageStore,
+      )
+      const e2eScenario = !app.isPackaged && process.env.DAWEIGE_USER_DATA
+        ? process.env.DAWEIGE_E2E_SCENARIO
+        : undefined
+      const scriptedScenarios = new Set(['manager-happy', 'manager-boundary', 'manager-crash'])
+      const turnRunner: AgentTurnRunner = e2eScenario && scriptedScenarios.has(e2eScenario)
+          ? new ScriptedAgentTurnRunner(
+            e2eScenario as 'manager-happy' | 'manager-boundary' | 'manager-crash',
+            async (sessionId) => {
+              const run = await roleRepository.getAgentRunByInternalSession(sessionId)
+              if (!run) return
+              await roleRepository.appendAgentRunBoundaryViolation(run.runId, {
+                path: 'C:\\daweige-e2e-outside\\blocked.txt',
+                toolName: 'write_file',
+                operation: 'write',
+                reason: '路径不在本次派活允许的文件夹内',
+                occurredAt: Date.now(),
+              })
+            },
+            async (input, finalText) => {
+              const session = await sessionService.openPiSession(input.sessionId)
+              const at = Date.now()
+              await session.appendMessage({ role: 'user', content: input.text, timestamp: at })
+              const assistant: AssistantMessage = {
+                role: 'assistant',
+                content: [{ type: 'text', text: finalText }],
+                api: 'anthropic-messages',
+                provider: input.selection.providerId,
+                model: input.selection.modelId,
+                usage: {
+                  input: 120,
+                  output: 80,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 200,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
+                stopReason: 'stop',
+                timestamp: at + 1,
+              }
+              const entryId = await session.appendMessage(assistant)
+              const timeZone = currentIanaTimeZone()
+              await usageStore?.insertEvents([{
+                sourceEntryId: entryId,
+                sessionId: input.sessionId,
+                provider: input.selection.providerId,
+                modelId: input.selection.modelId,
+                responseModelId: input.selection.modelId,
+                inputTokens: 120,
+                outputTokens: 80,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                cacheWrite1hTokens: null,
+                totalTokens: 200,
+                occurredAtMs: at + 1,
+                localDate: localDateFor(at + 1, timeZone),
+                timezoneId: timeZone,
+                stopReason: 'stop',
+              }], 'live')
+            },
+          )
+        : agentService
+      managerOrchestrator = new ManagerOrchestrator({
+        roles: roleRepository,
+        sessions: sessionService,
+        approvals: approvalBroker,
+        worker: new WorkerRunner(turnRunner),
+        query: agentRunQuery,
+        userDataPath: userData,
+        selection: async () => (await settingsStore.load()).providerSelection,
+        emitEvent: emitAgentEvent,
+        isPackaged: app.isPackaged,
+      })
+      managerOrchestratorRef = managerOrchestrator
+      managerCleanup = new ManagerCleanupService(
+        roleRepository,
+        sessionService,
+        agentService,
+        approvalBroker,
+      )
+      roleService.setManagerCleanup(managerCleanup)
+      usageService?.setDelegationProvider(() => agentRunQuery!.listAll())
       // 上次删除未完成的 job 幂等续跑:失败只记日志(角色已留 delete_failed,下次启动再试),
       // 绝不因单个删除未完成而禁用整个角色功能(初审阻断项整改)
       await roleService.resumeDeletionJobs({
@@ -259,16 +456,58 @@ app.whenReady().then(async () => {
         },
         removeSession: (sessionId) => sessionService.remove(sessionId),
       })
+      // 0.3.0:旧会话迁移与删除续跑完成后再种小柊,避免旧无 binding 会话误归 manager。
+      try {
+        const settings = await settingsStore.load()
+        managerBootstrap = await new ManagerSeedService(
+          userData,
+          roleRepository,
+          sessionService,
+        ).ensure(settings.providerSelection)
+      } catch (err) {
+        console.error(
+          '[manager] 小柊启动种子失败,本次仅关闭总管入口(旧角色与会话不受影响):',
+          redactCommonSecrets(err instanceof Error ? err.message : String(err)),
+        )
+        migrationError ??=
+          '小柊这次没有准备好,普通角色和旧会话仍可使用。重启应用会自动重试;若反复出现请反馈。'
+      }
+      try {
+        const recovered = await new AgentRunRecovery(roleRepository, sessionService).reconcileOnStartup({
+          preserveAwaitingApproval: e2eScenario === 'manager-happy' || e2eScenario === 'manager-boundary',
+        })
+        if (recovered.interrupted > 0 || recovered.removedOrphans > 0) {
+          console.info(`[manager] 启动恢复完成：中断派活 ${recovered.interrupted} 条，清理孤儿内部会话 ${recovered.removedOrphans} 条`)
+        }
+      } catch (err) {
+        console.error(
+          '[manager] 上次派活的收尾清理未完成,不影响使用:',
+          redactCommonSecrets(err instanceof Error ? err.message : String(err)),
+        )
+      }
+      if (e2eScenario === 'manager-happy' || e2eScenario === 'manager-boundary') {
+        e2eAwaitingRunIds = (await roleRepository.listAgentRuns())
+          .filter((run) => run.status === 'awaiting-approval')
+          .map((run) => run.runId)
+      }
     }
   }
 
   installCspHeader(devServerUrl)
   installIpcGate()
 
-  registerAppHandlers({ settingsStore, credentialStore, sessionService, reminderService, roleService, migrationError })
+  registerAppHandlers({
+    settingsStore,
+    credentialStore,
+    sessionService,
+    reminderService,
+    roleService,
+    migrationError,
+    manager: managerBootstrap,
+  })
   registerCredentialHandlers(credentialStore, connectivityService)
   registerSettingsHandlers(settingsStore)
-  registerSessionHandlers(sessionService, agentService, approvalBroker)
+  registerSessionHandlers(sessionService, agentService, approvalBroker, managerCleanup)
   if (roleService) {
     registerRoleHandlers({
       roleService,
@@ -280,6 +519,7 @@ app.whenReady().then(async () => {
   }
   registerWorkspaceHandlers(workspaceAuth, sessionService)
   registerMessageHandlers(agentService, settingsStore, approvalBroker, credentialStore, sessionService)
+  registerAgentRunHandlers(agentRunQuery)
   registerApprovalHandlers(approvalBroker)
   registerWindowHandlers()
   registerMemoryHandlers(memoryStore)
@@ -291,6 +531,16 @@ app.whenReady().then(async () => {
   }
 
   createMainWindow()
+  if (managerOrchestrator && e2eAwaitingRunIds.length > 0) {
+    // 等 renderer 完成事件订阅，测试夹具才重新发出真实 delegation confirmation。
+    setTimeout(() => {
+      for (const runId of e2eAwaitingRunIds) {
+        void managerOrchestrator?.resumeAwaitingRunForE2E(runId).catch((error) => {
+          console.error('[manager-e2e] 待确认夹具恢复失败:', error instanceof Error ? error.message : error)
+        })
+      }
+    }, 1_000)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
@@ -303,11 +553,15 @@ app.on('before-quit', (event) => {
   // 等存储队列收尾再真正退出(计划口径"退出前等待 drain";超时兜底防挂)
   event.preventDefault()
   approvalBrokerRef?.abortAll('应用即将退出,本次未执行')
-  const settle = Promise.allSettled([
-    sessionRepository?.close(),
-    usageServiceRef?.drainAndClose(),
-    roleRepositoryRef?.drainAndClose(),
-  ])
+  managerOrchestratorRef?.stopAccepting()
+  const settle = (async () => {
+    await managerOrchestratorRef?.drain()
+    await Promise.allSettled([
+      sessionRepository?.close(),
+      usageServiceRef?.drainAndClose(),
+      roleRepositoryRef?.drainAndClose(),
+    ])
+  })()
   const timeout = new Promise((resolve) => setTimeout(resolve, 5000))
   void Promise.race([settle, timeout]).finally(() => {
     app.quit()

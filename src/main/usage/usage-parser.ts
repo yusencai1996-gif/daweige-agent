@@ -56,7 +56,7 @@ export function parseAssistantUsage(input: {
   const cacheWrite1h = safeCount(usage.cacheWrite1h)
 
   // totalTokens 口径以四项之和为准:pi 归一值不一致时按四项重算,不采用上报值;
-  // 和仍须是安全整数(四个安全整数之和可能越界,codex 复审 S-01)
+  // 和仍须是安全整数(四个安全整数之和可能越界,复审 S-01)
   const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens
   if (!Number.isSafeInteger(totalTokens)) return undefined
 
@@ -65,7 +65,7 @@ export function parseAssistantUsage(input: {
       ? message.timestamp
       : input.occurredAtFallbackMs
   if (messageTimestamp === undefined) return undefined
-  // 超出 Date 有效范围的时间戳会让 Intl 归日抛异常,直接拒绝(codex 复审 B-02)
+  // 超出 Date 有效范围的时间戳会让 Intl 归日抛异常,直接拒绝(复审 B-02)
   if (Math.abs(messageTimestamp) > 8.64e15) return undefined
   const occurredAtMs = messageTimestamp
 

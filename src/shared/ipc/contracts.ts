@@ -31,6 +31,8 @@ export interface BootstrapState {
   readonly appVersion: string
   /** 启动迁移失败时的中文说明(含"重启应用会重试"指引);正常为空。 */
   readonly migrationError?: string
+  /** 总管种子(0.3.0);null=种子失败降级(前端显示可恢复警示,不伪造小柊)。 */
+  readonly manager: import('../domain/manager').ManagerBootstrap | null
   /** 全部用户角色(含已归档;前端按 archivedAt 分组)。 */
   readonly roles: readonly RoleSummary[]
   /** 全部用户可见会话(含已归档;前端按 roleId 分组、按 archivedAt 过滤)。 */
@@ -154,7 +156,7 @@ export interface IpcRequestMap {
   }
   'session:create': {
     request: {
-      /** 会话挂在哪个角色下;cwd 由主进程取该角色的主挂载目录,不再信任渲染进程传路径。 */
+      /** 会话挂在哪个角色下(worker roleId 或内置总管 'sys-xiaozhen');cwd 由主进程解析,不信任渲染进程传路径。 */
       readonly roleId: string
       readonly providerId: ProviderId
       readonly modelId: string
@@ -194,6 +196,23 @@ export interface IpcRequestMap {
     }
     /** 恢复后的最新会话摘要(archivedAt 为 null)。 */
     response: SessionSummary
+  }
+  /** 派活列表(0.3.0):只返回该 manager 会话拥有的 run,按 createdAt 稳定排序。 */
+  'agentRun:list': {
+    request: {
+      readonly managerSessionId: string
+    }
+    response: readonly import('../domain/manager').AgentRunSummary[]
+  }
+  /**
+   * 派活详情(0.3.0):唯一 internal 会话读取入口,只读。
+   * 先校验 run 存在与归属;不暴露任何 internal 写/删/abort 操作。
+   */
+  'agentRun:getDetail': {
+    request: {
+      readonly runId: import('../domain/manager').AgentRunId
+    }
+    response: import('../domain/manager').AgentRunDetail
   }
   'message:send': {
     request: {

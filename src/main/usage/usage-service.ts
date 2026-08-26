@@ -1,5 +1,6 @@
 import type { AgentMessage } from '@earendil-works/pi-agent-core'
 import type { UsageDashboard } from '../../shared/domain/usage'
+import type { AgentRunSummary } from '../../shared/domain/manager'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 import type { UsageStore } from './usage-store'
 import { currentIanaTimeZone, parseAssistantUsage, type ParsedUsageEvent } from './usage-parser'
@@ -40,11 +41,16 @@ const BACKFILL_BATCH_SIZE = 500
 
 export class UsageService implements UsageRecorder {
   private backfillPromise: Promise<void> | undefined
+  private delegationProvider: (() => Promise<readonly AgentRunSummary[]>) | undefined
 
   constructor(
     private readonly store: UsageStore,
     private readonly deps: UsageServiceDeps,
   ) {}
+
+  setDelegationProvider(provider: () => Promise<readonly AgentRunSummary[]>): void {
+    this.delegationProvider = provider
+  }
 
   // ---------- live 记录(agent 事件流挂钩) ----------
 
@@ -100,11 +106,11 @@ export class UsageService implements UsageRecorder {
         const inserted = await this.store.insertEvents(batch, 'backfill')
         batch.length = 0
         if (inserted > 0) this.notifyUpdated()
-        // 让出事件循环:批量事务不长时间占住主线程(codex 复审 B-01)
+        // 让出事件循环:批量事务不长时间占住主线程(复审 B-01)
         await new Promise((resolve) => setImmediate(resolve))
       }
       for (const row of this.deps.iterateMessageEntries()) {
-        // 行级隔离(codex 复审 B-02):一条坏数据只丢自己,不阻断其后所有历史回填
+        // 行级隔离(复审 B-02):一条坏数据只丢自己,不阻断其后所有历史回填
         try {
           const message = row.message as { role?: string; timestamp?: number }
           const at =
@@ -149,7 +155,18 @@ export class UsageService implements UsageRecorder {
   /** 页面数据:等回填完成,保证打开即完整(回填失败不阻塞,返回已有数据)。 */
   async getDashboard(): Promise<UsageDashboard> {
     await this.backfillPromise?.catch(() => {})
-    return this.store.buildDashboard(Date.now(), currentIanaTimeZone())
+    const dashboard = await this.store.buildDashboard(Date.now(), currentIanaTimeZone())
+    const runs = await this.delegationProvider?.().catch((error) => {
+      this.deps.logError('派活用量查询失败，本次统计页暂不显示派活明细', error)
+      return []
+    }) ?? []
+    return {
+      ...dashboard,
+      delegations: {
+        totalTokens: runs.reduce((sum, run) => sum + run.usage.totalTokens, 0),
+        runs,
+      },
+    }
   }
 
   async drainAndClose(): Promise<void> {

@@ -142,6 +142,9 @@ export function registerRoleHandlers(deps: {
 
 /** RoleError → IpcError(中文);未知错误原样(由 handler 层兜底 EINTERNAL)。 */
 function mapRoleError(err: unknown, fallback = '操作失败'): unknown {
+  if (err instanceof Error && err.name === 'ManagerCleanupBusyError') {
+    return ipcError('ESESSION_BUSY', err.message)
+  }
   if (err instanceof Error && err.name === 'RoleError') {
     const roleErr = err as RoleError
     switch (roleErr.code) {

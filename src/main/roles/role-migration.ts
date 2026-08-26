@@ -4,6 +4,7 @@ import { mkdir, rename, rm, stat } from 'node:fs/promises'
 import type { SqliteSessionMetadata } from '@earendil-works/pi-session-backend-sqlite-node'
 import type { RoleRepository } from './role-repository'
 import type { SessionRepository } from '../storage/session-repository'
+import { readAppMeta } from '../storage/session-repository'
 import { buildProfile, LEGACY_EMPTY_GUARDRAILS } from './role-templates'
 import {
   canonicalWorkspaceKey,
@@ -74,11 +75,13 @@ export class RoleMigration {
       )
     }
 
-    // codex 复审 B-02:先抢救半角色(DB 已提交、家目录未 promote 就中断的)——
+    // 复审 B-02:先抢救半角色(DB 已提交、家目录未 promote 就中断的)——
     // 必须在清理 staging 之前做,staging 里还留着它的家目录内容
     await this.recoverInterruptedHomes()
 
-    const pending = metas.filter((m) => !bound.has(m.id))
+    // internal 是 pi 库自身的权威纵深标记。即使补偿失败留下无 binding 会话，
+    // 也绝不能按旧用户会话迁移；有无 run 引用均交给启动 recovery 判定清理。
+    const pending = metas.filter((m) => !bound.has(m.id) && readAppMeta(m)?.internal !== true)
     if (pending.length === 0) {
       return { migratedSessions: 0, createdRoles: 0, alreadyBound: bound.size, orphanBindings: orphanBindings.length }
     }
@@ -98,7 +101,7 @@ export class RoleMigration {
     let createdRoles = 0
     // 同名不同目录的显示名消歧:basename → 计数;
     // 初始化吃进已有角色名并剥掉「（N）」消歧后缀归一到基础名——
-    // 否则已有 名称+名称（2） 时第三批同名仍会算出 seen=2 再生成一次 名称（2）(codex 复核未闭合点)
+    // 否则已有 名称+名称（2） 时第三批同名仍会算出 seen=2 再生成一次 名称（2）(复核未闭合点)
     const nameCounts = new Map<string, number>()
     for (const existing of await this.repository.listRoleRows()) {
       const base = existing.displayName.replace(/（\d+）$/, '')
@@ -125,7 +128,7 @@ export class RoleMigration {
 
       const first = group[0]!
       // 目录名截断预留消歧后缀长度:18 字+「（999）」最长 5 字=23,容纳到三位数计数
-      // (codex 复审 B-05:超长名无法通过删除确认的输名校验,角色会删不掉)
+      // (复审 B-05:超长名无法通过删除确认的输名校验,角色会删不掉)
       const rawName = basename(resolve(first.cwdOriginal)) || first.cwdOriginal
       const dirName = [...rawName].slice(0, 18).join('')
       const availability = group.some((p) => p.availability === 'available') ? 'available' : 'missing'
@@ -179,7 +182,7 @@ export class RoleMigration {
   }
 
   /**
-   * 抢救半角色(codex 复审 B-02):DB 有角色行但家目录缺失(上轮 DB 提交后、promote 前退出)。
+   * 抢救半角色(复审 B-02):DB 有角色行但家目录缺失(上轮 DB 提交后、promote 前退出)。
    * staging 里找得到该 roleId 的完整家目录 → 原样 promote;找不到 → 按模板重建空守则
    * (守则文本若在 staging 也丢了则无法恢复,记日志;角色本体与绑定保住)。
    */
@@ -188,7 +191,7 @@ export class RoleMigration {
     const stagingDirRoot = stagingRoot(this.userDataPath)
     const { readdir, readFile } = await import('node:fs/promises')
     // staging 根不存在≠无待抢救者:DB 角色仍可能缺家目录(上轮 promote 前退出且 staging 已被清),
-    // 空列表继续走"无匹配→重建空守则"分支(codex 复核 B-02 未闭合点)
+    // 空列表继续走"无匹配→重建空守则"分支(复核 B-02 未闭合点)
     let stagingRuns: string[] = []
     try {
       stagingRuns = await readdir(stagingDirRoot)
@@ -242,7 +245,7 @@ export class RoleMigration {
         plans.push({ meta, key: `unresolved:${meta.id}`, cwdOriginal: cwd ?? '', availability: 'unresolved' })
         continue
       }
-      // codex 复审 S-04:仅"目录不存在"(ENOENT)算 missing;
+      // 复审 S-04:仅"目录不存在"(ENOENT)算 missing;
       // 权限拒绝/IO 错误等不等于不存在,按 unresolved 处理不猜
       let exists = true
       let statBroken = false

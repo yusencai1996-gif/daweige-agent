@@ -60,11 +60,12 @@ describe('approval gate(beforeToolCall)', () => {
     const pending = g(ctx('read_file', { path: outside }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    expect(card && card.type === 'approval_required' && card.request.kind).toBe('outside-read')
-    expect(card && card.type === 'approval_required' && card.request.outsideWorkspace).toBe(true)
+    const req = card && card.type === 'approval_required' && card.request.kind !== 'delegation' ? card.request : undefined
+    expect(req?.kind).toBe('outside-read')
+    expect(req?.outsideWorkspace).toBe(true)
 
     broker.resolve({
-      approvalId: card && card.type === 'approval_required' ? card.request.id : '',
+      approvalId: req?.id ?? '',
       decision: 'approve',
     })
     expect(await pending).toBeUndefined()
@@ -117,7 +118,10 @@ describe('approval gate(beforeToolCall)', () => {
     const pending = g(ctx('delete_paths', { paths: [join(workspace, 'a.txt'), join(workspace, 'b.txt')] }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    const req = card && card.type === 'approval_required' ? card.request : undefined
+    const req =
+      card && card.type === 'approval_required' && card.request.kind !== 'delegation'
+        ? card.request
+        : undefined
     expect(req?.recoverable).toBe(true)
     expect(req?.itemCount).toBe(2)
     expect(req?.title).toContain('删除 2')
@@ -157,7 +161,10 @@ describe('approval gate(beforeToolCall)', () => {
     }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    const req = card && card.type === 'approval_required' ? card.request : undefined
+    const req =
+      card && card.type === 'approval_required' && card.request.kind !== 'delegation'
+        ? card.request
+        : undefined
     expect(req?.itemCount).toBe(2)
     expect(req?.outsideWorkspace).toBe(true)
     expect(req?.title).toContain('移动 2')
@@ -173,7 +180,10 @@ describe('会话级授权(A-01 approve-session)', () => {
     const first = g(ctx('write_file', { path: join(workspace, 'a.txt'), content: 'x' }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    const req = card && card.type === 'approval_required' ? card.request : undefined
+    const req =
+      card && card.type === 'approval_required' && card.request.kind !== 'delegation'
+        ? card.request
+        : undefined
     expect(req?.toolName).toBe('write_file')
     broker.resolve({ approvalId: req?.id ?? '', decision: 'approve-session' })
     expect(await first).toBeUndefined()
