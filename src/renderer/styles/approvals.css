@@ -141,3 +141,47 @@
   font-size: 12.5px;
   color: var(--muted);
 }
+
+/* ============ C4 命令确认卡 ============ */
+/* 命令原文块:等宽一字不改写,横向滚动不折断;内部干净底色(无条纹) */
+.approval-command-wrap {
+  margin-top: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.approval-command {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 9px 12px;
+  background: var(--ink-hover-04);
+  border: 1px solid var(--line);
+  border-radius: 5px 7px 4px 6px;
+  overflow-x: auto;
+}
+.approval-command code {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre;
+}
+.approval-command-copy {
+  flex: 0 0 auto;
+}
+/* 网络如实标注(契约 sandbox.network='not-isolated'):灰档说明,不做开关 */
+.command-net-note {
+  margin-top: 10px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+  background: var(--ink-hover-04);
+  border-radius: 5px 7px 4px 6px;
+}
+/* 策略人话理由 */
+.approval-reason {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}

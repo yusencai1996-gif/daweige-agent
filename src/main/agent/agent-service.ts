@@ -62,6 +62,8 @@ export interface AgentTurnResult {
 export interface AgentTurnRunner {
   run(input: AgentTurnInput): Promise<AgentTurnResult>
   abortSession(sessionId: string): void
+  /** followup 追加的窄接口(0.4.0 D,PLAN §6.5):会话不活跃时抛错。 */
+  steerSession(sessionId: string, text: string): Promise<void>
 }
 
 export interface SessionToolchain {
@@ -97,6 +99,11 @@ export interface AgentServiceDeps {
   thinkingLevel?: () => ThinkingLevel | undefined
   /** 使用统计记录(usage 模块);未提供时跳过记录(测试/降级)。 */
   usageRecorder?: UsageRecorder
+  /**
+   * 0.4.0 A(A-14):会话 effective cwd 覆盖钩子(session-service 实现,manager 会话生效)。
+   * 返回值替代 pi meta.cwd 作为工具写根与系统提示词工作区;未提供时沿用 meta.cwd。
+   */
+  managerCwdOverride?: (sessionId: string) => Promise<string | undefined>
 }
 
 class ActiveAgent {
@@ -167,6 +174,24 @@ export class AgentService implements AgentTurnRunner {
     this.active.get(sessionId)?.agent.abort()
   }
 
+  /**
+   * followup 追加(0.4.0 D,PLAN §6.5):先持久化 user message 到 pi 会话,
+   * 再注入 steering 队列——pi 在当前 assistant turn 完成后、下一轮模型调用前消费;
+   * 正等工具确认时先等确认 resolve,turn 边界收到补充。不新增会话,usage 继续按本会话归集。
+   * isStreaming 前置检查(阶段复审整改):turn 已结束的会话 steering 队列无人排空,
+   * 消息持久化后只会变成无人消费的死 transcript——趁还没写入就拒绝。
+   */
+  async steerSession(sessionId: string, text: string): Promise<void> {
+    const active = this.active.get(sessionId)
+    if (!active) throw new Error('这条派活当前不在干活,补充要求送不进去')
+    if (!active.agent.state.isStreaming) {
+      throw new Error('这条派活的当前步骤刚好结束了,补充要求没有送进去;请让小柊重新派活')
+    }
+    const userMessage: UserMessage = { role: 'user', content: text, timestamp: Date.now() }
+    await active.session.appendMessage(userMessage)
+    active.agent.steer(userMessage)
+  }
+
   /** 归档/删除前的忙碌检查:该会话是否正在流式回复。 */
   isSessionStreaming(sessionId: string): boolean {
     return this.active.get(sessionId)?.agent.state.isStreaming ?? false
@@ -194,8 +219,10 @@ export class AgentService implements AgentTurnRunner {
     const model = this.resolveModel(selection)
     const meta = await session.getMetadata()
     const orchestration = await this.deps.orchestrationPrompt?.(sessionId)
+    // 0.4.0 A:manager 会话的 effective cwd 跟随 resolver 当前值(迁移后旧会话立即指向新位置)
+    const effectiveCwd = (await this.deps.managerCwdOverride?.(sessionId)) ?? meta.cwd
     const [toolchain, memoryNotes, role] = await Promise.all([
-      this.deps.toolchain?.({ sessionId, workspacePath: meta.cwd }),
+      this.deps.toolchain?.({ sessionId, workspacePath: effectiveCwd }),
       orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
       this.deps.rolePrompt?.(sessionId),
     ])
@@ -203,7 +230,7 @@ export class AgentService implements AgentTurnRunner {
     const agent = new Agent({
       initialState: {
         systemPrompt: composeSystemPrompt({
-          workspacePath: meta.cwd,
+          workspacePath: effectiveCwd,
           memories: memoryNotes ?? [],
           role,
           ...(orchestration?.manager ? { manager: orchestration.manager } : {}),
@@ -229,7 +256,7 @@ export class AgentService implements AgentTurnRunner {
       beforeToolCall: toolchain?.beforeToolCall,
     })
 
-    const active = new ActiveAgent(sessionId, agent, session, meta.cwd)
+    const active = new ActiveAgent(sessionId, agent, session, effectiveCwd)
     this.wireEvents(active)
     this.active.set(sessionId, active)
     return active
@@ -302,6 +329,20 @@ export class AgentService implements AgentTurnRunner {
         }
         case 'message_end': {
           if (event.message.role === 'user') return // user 消息已在 send() 持久化
+          // 引用补登先于持久化 await:messageId 计算不依赖落库结果,
+          // 若 pi 某版本不再串行 await 监听器,补登晚于 tool_execution_start 仍会 miss
+          const messageIdEarly =
+            active.messageIds.get(event.message) ?? active.streamingMessageId
+          if (messageIdEarly) {
+            // pi 流式每帧浅拷贝 message:message_start 存的是首帧拷贝,finalMessage 真实引用
+            // 从未入表,后续 tool_execution_start 按它查表会 miss(工具行挂不上消息)。
+            // 这里把最终引用补登进表,同 id 覆盖幂等。
+            active.messageIds.set(event.message, messageIdEarly)
+            // 双保险:查表方用的是 state.messages 里的引用(lastAssistant),两者理论同源;
+            // 若 pi 未来某版本在 state 里存的是另一份最终拷贝,这里保证查表引用同样命中
+            const anchor = lastAssistant(active)
+            if (anchor !== undefined) active.messageIds.set(anchor, messageIdEarly)
+          }
           // 持久化屏障:subscribe 监听器按序 await,这条落库完成后事件流才继续。
           // pi 的 Session 校验拒绝含 undefined 的 payload(如 faux/流聚合留下的显式
           // undefined 字段),入库存前统一清洗;清洗后仍失败不阻断事件流,只记日志。
@@ -357,6 +398,10 @@ export class AgentService implements AgentTurnRunner {
         case 'tool_execution_start': {
           const anchor = lastAssistant(active)
           const messageId = anchor ? active.messageIds.get(anchor) : undefined
+          // 哨兵:引用同源性假设被 pi 升级打破时第一时间暴露(工具行会挂不上消息)
+          if (anchor && !messageId) {
+            console.warn(`[agent] tool_execution_start 未命中消息映射(会话 ${sessionId},工具 ${event.toolName});pi 引用行为可能已变化`)
+          }
           this.push({
             type: 'tool_start',
             sessionId,
@@ -366,6 +411,15 @@ export class AgentService implements AgentTurnRunner {
               toolName: event.toolName,
               displayName: TOOL_DISPLAY_NAMES[event.toolName] ?? event.toolName,
               status: 'running',
+              // run_command 运行中给命令摘要(头部展示;终值由 command_finished/details 提供)
+              ...(event.toolName === 'run_command' &&
+              typeof (event.args as { command?: unknown } | undefined)?.command === 'string'
+                ? {
+                    summary: commandSummary(
+                      (event.args as { command: string }).command,
+                    ),
+                  }
+                : {}),
             },
           })
           return
@@ -484,6 +538,13 @@ function lastAssistant(active: ActiveAgent): AgentMessage | undefined {
     if (m && m.role === 'assistant') return m
   }
   return undefined
+}
+
+/** run_command 运行中的命令摘要(压到 120 字符;完整原文在终值 details.command)。 */
+function commandSummary(command: string): string {
+  const oneLine = command.replace(/\s+/g, ' ').trim()
+  if (oneLine.length <= 120) return oneLine
+  return `${oneLine.slice(0, 120)}…`
 }
 
 function isAbortError(err: unknown): boolean {

@@ -398,6 +398,19 @@ export class MockBridge implements DaweigeBridge {
     })
     this.handle('settings:get', () => bootstrap.settings)
     this.handle('settings:update', ({ settings }) => settings)
+    // A-14 演示:恢复默认=migrate(默认路径)→ isDefault 回 true(后端契约如此)
+    const demoManagerDefaultWorkspace =
+      'C:/Users/demo/AppData/Roaming/大微阁/daweige/system/sys-xiaozhen/workspace'
+    this.handle('managerWorkspace:get', () => ({
+      effectivePath: demoManagerDefaultWorkspace,
+      isDefault: true,
+      restartRequired: false,
+    }))
+    this.handle('managerWorkspace:migrate', ({ targetPath }) => ({
+      effectivePath: targetPath,
+      isDefault: targetPath === demoManagerDefaultWorkspace,
+      restartRequired: true,
+    }))
     this.handle('credential:status', () => bootstrap.credentialStatuses)
     this.handle('credential:delete', ({ providerId }) => ({
       providerId,
@@ -437,6 +450,7 @@ export class MockBridge implements DaweigeBridge {
     this.handle('message:abort', () => undefined)
     this.handle('approval:respond', () => undefined)
     // 0.3.0 派活演示:awaiting(待确认)/ completed(含用量)/ interrupted(中断可追溯)三态
+    // 0.4.0 D:a→b 组成一条交棒链(graph-0123…),c 是独立链——族谱 UI 演示数据
     const demoRuns: AgentRunSummary[] = [
       {
         runId: 'run-a1b2c3d4e5f60718',
@@ -447,6 +461,11 @@ export class MockBridge implements DaweigeBridge {
         parentRunId: null,
         status: 'completed',
         waitingReason: null,
+        graphId: 'graph-0123456789abcdef',
+        dependsOnRunIds: [],
+        queueReason: null,
+        followupCount: 1,
+        interruptSource: null,
         taskBrief: '汇总 D:\\门店报表 下所有门店的月度销售表,输出总额与异常行',
         allowedWorkspacePaths: ['D:\\门店报表'],
         usage: {
@@ -468,9 +487,14 @@ export class MockBridge implements DaweigeBridge {
         targetRoleId: 'agent-a1b2c3d4e5f6',
         targetRoleName: '小编',
         internalSessionId: null,
-        parentRunId: null,
+        parentRunId: 'run-a1b2c3d4e5f60718',
         status: 'awaiting-approval',
         waitingReason: null,
+        graphId: 'graph-0123456789abcdef',
+        dependsOnRunIds: ['run-a1b2c3d4e5f60718'],
+        queueReason: null,
+        followupCount: 0,
+        interruptSource: null,
         taskBrief: '把 D:\\稿件草稿 里的素材整理成一篇 800 字短文',
         allowedWorkspacePaths: ['D:\\稿件草稿'],
         usage: { rounds: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
@@ -488,6 +512,11 @@ export class MockBridge implements DaweigeBridge {
         parentRunId: null,
         status: 'interrupted',
         waitingReason: null,
+        graphId: 'graph-fedcba9876543210',
+        dependsOnRunIds: [],
+        queueReason: null,
+        followupCount: 0,
+        interruptSource: 'app-restart',
         taskBrief: '核对上月发票与入库单',
         allowedWorkspacePaths: ['D:\\门店报表'],
         usage: { rounds: 2, inputTokens: 9_100, outputTokens: 2_040, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 11_140 },
@@ -501,6 +530,52 @@ export class MockBridge implements DaweigeBridge {
     this.handle('agentRun:list', ({ managerSessionId }) =>
       demoRuns.filter((r) => r.managerSessionId === managerSessionId),
     )
+    this.handle('agentRun:getGraph', ({ graphId, managerSessionId }) => {
+      const nodes = demoRuns.filter((r) => r.graphId === graphId)
+      if (nodes.length === 0) throw new Error(`MockBridge: 未预置协作链 ${graphId}`)
+      // ownership 与真实服务同语义:graph 必须属于该 manager 会话
+      if (nodes.some((n) => n.managerSessionId !== managerSessionId)) {
+        throw new Error('MockBridge: 协作链不属于该总管会话')
+      }
+      const edges =
+        graphId === 'graph-0123456789abcdef'
+          ? [{ fromRunId: 'run-a1b2c3d4e5f60718', toRunId: 'run-b2c3d4e5f6a70829', kind: 'handoff' as const }]
+          : []
+      return {
+        graphId,
+        managerSessionId,
+        nodes,
+        edges,
+        aggregate: {
+          active: nodes.filter((n) => n.status === 'running' || n.status === 'waiting' || n.status === 'awaiting-approval' || n.status === 'queued').length,
+          completed: nodes.filter((n) => n.status === 'completed').length,
+          failed: nodes.filter((n) => n.status === 'failed' || n.status === 'rejected').length,
+          interrupted: nodes.filter((n) => n.status === 'interrupted').length,
+          totalTokens: nodes.reduce((sum, n) => sum + n.usage.totalTokens, 0),
+        },
+      }
+    })
+    this.handle('agentRun:interrupt', ({ runId, managerSessionId }) => {
+      const run = demoRuns.find((r) => r.runId === runId)
+      if (!run) throw new Error(`MockBridge: 未预置派活 ${runId}`)
+      if (run.managerSessionId !== managerSessionId) {
+        throw new Error('MockBridge: 派活不属于该总管会话')
+      }
+      // 真实语义:非终态打断成 interrupted(user);终态幂等返回原状
+      if (run.status !== 'completed' && run.status !== 'failed' &&
+          run.status !== 'rejected' && run.status !== 'interrupted') {
+        const index = demoRuns.indexOf(run)
+        demoRuns[index] = {
+          ...run,
+          status: 'interrupted',
+          interruptSource: 'user',
+          failureMessage: '用户打断了这条派活;已完成的产出保留,未完成的没有继续',
+          updatedAt: Date.now(),
+        }
+        return demoRuns[index]!
+      }
+      return run
+    })
     this.handle('agentRun:getDetail', ({ runId }) => {
       const run = demoRuns.find((r) => r.runId === runId)
       if (!run) throw new Error(`MockBridge: 未预置派活 ${runId}`)

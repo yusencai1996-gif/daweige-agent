@@ -19,6 +19,8 @@ interface ComposerProps {
   readonly contextUsage: ContextUsageState | null
   readonly providers: readonly ProviderInfo[]
   readonly selection: ProviderSelection
+  /** 启用池(settings.enabledModels);undefined/空=老数据,模型面板回退只显示当前一项。 */
+  readonly enabledModels?: readonly ProviderSelection[] | undefined
   readonly supportsThinking: boolean
   readonly thinkingLevel: ThinkingLevel
   readonly onToggleSidebar: () => void
@@ -79,6 +81,7 @@ export function Composer({
   contextUsage,
   providers,
   selection,
+  enabledModels,
   supportsThinking,
   thinkingLevel,
   onToggleSidebar,
@@ -202,7 +205,12 @@ export function Composer({
           </div>
           <div className="composer-controls">
             <ContextRing usage={contextUsage} />
-            <ProviderSelector providers={providers} selection={selection} onSelect={onSelectProvider} />
+            <ProviderSelector
+              providers={providers}
+              selection={selection}
+              enabledModels={enabledModels}
+              onSelect={onSelectProvider}
+            />
             {supportsThinking && (
               <select
                 className="thinking-select"

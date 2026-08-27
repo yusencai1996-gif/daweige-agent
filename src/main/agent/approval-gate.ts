@@ -52,6 +52,11 @@ export interface ApprovalGateDeps {
   getRoleDisplayName?: () => Promise<string | undefined>
   /** delegated child 的 run 状态联动；普通会话不提供。 */
   onApprovalPending?: (waiting: boolean) => void | Promise<void>
+  /**
+   * 工作区租约门(0.4.0 D,普通会话专用):目标路径被活跃派活租约占用时抛人话错误,
+   * gate 直接 block——不弹注定不能执行的写卡(delegated child 不接:它自己就是租约方)。
+   */
+  assertNotLeased?: (paths: readonly string[]) => Promise<void>
 }
 
 export function createApprovalGate(deps: ApprovalGateDeps) {
@@ -62,6 +67,10 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
     const args = (argsOf(context) ?? {}) as Record<string, unknown>
 
       if (MEMORY_TOOLS.has(name)) return undefined
+
+      // run_command(0.4.0 C3):审批语义完全不同(策略三级+精确命令缓存),
+      // 由工具内部自管(见 tools/run-command.ts);gate 放行,不重复拦截。
+      if (name === 'run_command') return undefined
 
       if (ROLE_RULES_TOOLS.has(name)) {
         // 改守则必须用户点头:每次调用都弹卡,用户拒绝/超时即不落盘。
@@ -133,6 +142,14 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
       if (zones.some((z) => z.zone === 'app-internal')) {
         return { block: true, reason: '应用内部数据不允许修改。' }
       }
+      // 工作区租约门(普通会话):被派活占用的根直接 block,弹卡也不能执行(阶段复审阻断整改)
+      if (!isStrictDelegationPathPolicy(deps.policy) && deps.assertNotLeased) {
+        try {
+          await deps.assertNotLeased(checkPaths)
+        } catch (error) {
+          return { block: true, reason: error instanceof Error ? error.message : '这个文件夹正被一条派活使用' }
+        }
+      }
       const outside = zones.some((z) => z.zone === 'outside')
       // 会话级授权(A-01):用户点过"本次会话全部允许"的工具,工作区内免再弹卡;
       // 删除与工作区外操作永远逐次确认(安全底线)。
@@ -155,6 +172,19 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         recoverable: name === 'delete_paths', // 删除走回收站
         outsideWorkspace: outside,
       }))
+      // 批准后复检租约(复审整改复验·TOCTOU):等用户确认的窗口里,delegated run
+      // 可能恰好拿到同根租约——approve 与 approve-session 都不能成为绕过互斥的后门
+      if (
+        (outcome.decision === 'approve' || outcome.decision === 'approve-session') &&
+        !isStrictDelegationPathPolicy(deps.policy) &&
+        deps.assertNotLeased
+      ) {
+        try {
+          await deps.assertNotLeased(checkPaths)
+        } catch (error) {
+          return { block: true, reason: error instanceof Error ? error.message : '这个文件夹正被一条派活使用' }
+        }
+      }
       return settle(outcome)
     }
 
@@ -178,7 +208,8 @@ async function withApprovalLifecycle<T>(
 function settle(
   outcome: Awaited<ReturnType<ApprovalBroker['request']>>,
 ): BeforeToolCallResult | undefined {
-  if (outcome.decision === 'approve') return undefined
+  // 文件工具的 approve-session 已由 broker sessionGrants 兜住,到达 gate 的 approve 系一律放行
+  if (outcome.decision === 'approve' || outcome.decision === 'approve-session') return undefined
   if (outcome.note && outcome.note.length > 0) {
     return { block: true, reason: `用户拒绝了这次操作,并说:${outcome.note}` }
   }

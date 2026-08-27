@@ -25,6 +25,61 @@ export type AgentRunStatus =
 
 export type AgentRunWaitingReason = 'manager-wait' | 'user-approval' | null
 
+/** 排队原因(0.4.0 D,PLAN §6.2):queued 态才允许非空。 */
+export type AgentRunQueueReason = 'dependency' | 'workspace-lock' | 'concurrency-limit' | null
+
+/** 打断来源(0.4.0 D,PLAN §6.6):interrupted 态才允许非空;app-restart 不得伪装成用户打断。 */
+export type AgentRunInterruptSource = 'user' | 'manager' | 'app-restart' | null
+
+/** 协作链 ID(0.4.0 D):graph- + 16 位小写十六进制,主进程生成。 */
+export type AgentGraphId = string
+
+/**
+ * 中转交棒信封(0.4.0 D,PLAN §6.3)——"只继承定论":
+ * 服务端从 DB 权威 DelegationResult 构造,模型/渲染层只读;
+ * 不含 child thinking/transcript 字段,worker 也拿不到 send_message 工具。
+ */
+export interface HandoffEnvelopeV1 {
+  readonly schemaVersion: 1
+  /** 定论来源 run(稳定排序;全部必须已 completed)。 */
+  readonly sourceRunIds: readonly AgentRunId[]
+  readonly conclusions: readonly string[]
+  /** 已验证的产物路径(引用不授权:下游写权限仍由自己的 mounts/delegation 决定)。 */
+  readonly artifactPaths: readonly string[]
+  readonly unmetCriteria: readonly string[]
+  /** 越界事实(boundary violations 的定论摘要)。 */
+  readonly boundaryFacts: readonly string[]
+  /**
+   * 上游数据明细(A-19):每来源最多一条,带角色名前缀;来源未提供时该来源无条目。
+   * 下游拿不到上游原始文件,核对要用的关键数字靠这里,不开放原件读取。
+   */
+  readonly detailData: readonly string[]
+  /** 总管对交棒的补充结论。 */
+  readonly managerConclusion: string
+}
+
+/** 协作链边(0.4.0 D):dependency=显式依赖;handoff=send_message 交棒建立的边。 */
+export interface AgentRunGraphEdge {
+  readonly fromRunId: AgentRunId
+  readonly toRunId: AgentRunId
+  readonly kind: 'dependency' | 'handoff'
+}
+
+/** 协作链视图(0.4.0 D,agentRun:getGraph 响应):图状态完全由 DTO 推导,renderer 不存第二份。 */
+export interface AgentRunGraph {
+  readonly graphId: AgentGraphId
+  readonly managerSessionId: string
+  readonly nodes: readonly AgentRunSummary[]
+  readonly edges: readonly AgentRunGraphEdge[]
+  readonly aggregate: {
+    readonly active: number
+    readonly completed: number
+    readonly failed: number
+    readonly interrupted: number
+    readonly totalTokens: number
+  }
+}
+
 /**
  * 派活信封:子 agent 可见的全部输入("只继承定论")。
  * 总管的思考、工具调用、其他角色对话、未整理猜测均无数据入口。
@@ -50,6 +105,11 @@ export interface DelegationResult {
   readonly artifactPaths: readonly string[]
   /** 未完成的验收要点(保守 fallback 时全部标 unmet)。 */
   readonly unmetCriteria: readonly string[]
+  /**
+   * 数据明细(A-19,可选 1~4_000 字):产出中下游可能要核对的关键数字/条目。
+   * 下游角色读不到上游的原始文件,交棒时这一段会随定论一起传给下游。
+   */
+  readonly detailData?: string
   /** 越界事实(主进程权威记录,不接受模型覆盖)。 */
   readonly boundaryViolations: readonly {
     readonly path: string
@@ -83,6 +143,16 @@ export interface AgentRunSummary {
   readonly parentRunId: AgentRunId | null
   readonly status: AgentRunStatus
   readonly waitingReason: AgentRunWaitingReason
+  /** 所属协作链(0.4.0 D);单发派活也归入自己的单节点 graph。 */
+  readonly graphId: AgentGraphId
+  /** 显式依赖(0.4.0 D):空数组=可独立调度;同 graph 校验由服务端做。 */
+  readonly dependsOnRunIds: readonly AgentRunId[]
+  /** 排队原因(0.4.0 D):仅 queued 态非空。 */
+  readonly queueReason: AgentRunQueueReason
+  /** followup 追加次数(0.4.0 D)。 */
+  readonly followupCount: number
+  /** 打断来源(0.4.0 D):仅 interrupted 态非空。 */
+  readonly interruptSource: AgentRunInterruptSource
   readonly taskBrief: string
   readonly allowedWorkspacePaths: readonly string[]
   readonly usage: AgentRunUsage

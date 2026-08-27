@@ -6,6 +6,7 @@ import type {
   DelegationApprovalRequest,
   FileApprovalRequest,
 } from '../../shared/domain/approval'
+import type { CommandApprovalRequest, SandboxProfileSnapshot } from '../../shared/domain/command'
 import type { AgentRunId } from '../../shared/domain/manager'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 
@@ -25,8 +26,8 @@ export interface ApprovalInput {
   sessionId: string
   /** 卡片展示归属;child 传 manager user session,普通会话不传。 */
   surfaceSessionId?: string
-  /** 文件/守则类卡片;delegation(0.3.0)由 orchestrator 专用入口发起,不走本结构。 */
-  kind: Exclude<ApprovalKind, 'delegation'>
+  /** 文件/守则类卡片;delegation(0.3.0)由 orchestrator 专用入口发起;command(0.4.0)由 run_command 专用入口发起,均不走本结构。 */
+  kind: Exclude<ApprovalKind, 'delegation' | 'command'>
   title: string
   description: string
   itemCount: number
@@ -51,8 +52,24 @@ export interface DelegationApprovalInput {
   description: string
 }
 
+/** 命令审批输入(0.4.0 C3);owner=发起 run_command 的会话(internal child 各自独立)。 */
+export interface CommandApprovalInput {
+  sessionId: string
+  surfaceSessionId?: string
+  title: string
+  description: string
+  command: string
+  cwd: string
+  timeoutMs: number
+  sandbox: SandboxProfileSnapshot
+  reason: string
+  toolCallId: string
+}
+
 export type ApprovalOutcome =
   | { decision: 'approve' }
+  /** command(0.4.0 C)专用:本会话允许同命令再跑——由工具层 CommandApprovalCache 双登记。 */
+  | { decision: 'approve-session' }
   | { decision: 'reject'; note?: string; timedOut?: boolean }
 
 interface PendingApproval {
@@ -123,6 +140,25 @@ export class ApprovalBroker {
     return this.enqueueRequest(request, input.sessionId, input.surfaceSessionId)
   }
 
+  /** 命令运行专用入口(0.4.0 C3);同一套超时/abort/close fail-closed 生命周期。 */
+  async requestCommand(input: CommandApprovalInput): Promise<ApprovalOutcome> {
+    const request: CommandApprovalRequest = {
+      id: randomUUID(),
+      kind: 'command',
+      title: input.title,
+      description: input.description,
+      command: input.command,
+      cwd: input.cwd,
+      timeoutMs: input.timeoutMs,
+      sandbox: input.sandbox,
+      reason: input.reason,
+      toolCallId: input.toolCallId,
+      toolName: 'run_command',
+      createdAt: Date.now(),
+    }
+    return this.enqueueRequest(request, input.sessionId, input.surfaceSessionId)
+  }
+
   private enqueueRequest(
     request: ApprovalRequest,
     sessionId: string,
@@ -184,6 +220,7 @@ export class ApprovalBroker {
       const req = pending.request
       if (
         req.kind !== 'delegation' &&
+        req.kind !== 'command' &&
         req.toolName &&
         req.kind !== 'delete' &&
         req.kind !== 'role-rules-edit' &&
@@ -196,6 +233,13 @@ export class ApprovalBroker {
         }
         grants.add(req.toolName)
       }
+      // command(0.4.0)不走上面 sessionId→toolName 旧通道(会把所有命令放成大洞);
+      // 它的会话级免卡由 C3 的 CommandApprovalCache 以"完全相同命令+路径+沙箱档"精确键实现——
+      // outcome 透传给工具层 recordDecision 双登记(turn 档 + session 档)。
+      if (req.kind === 'command') {
+        pending.settle({ decision: 'approve-session' })
+        return
+      }
     }
     pending.settle({ decision: 'approve' })
   }
@@ -207,6 +251,22 @@ export class ApprovalBroker {
       if (pending.sessionId === sessionId) return true
     }
     return false
+  }
+
+  /**
+   * 按 runId 精确拒绝未决的派活确认卡(0.4.0 D,阶段复审整改):
+   * 打断 awaiting-approval 的 run 时,spawn 的确认 Promise 要立即收敛,
+   * 不能挂到超时;不影响同 manager 会话的其他确认卡。
+   */
+  abortDelegationForRun(runId: string, reason = '派活被打断，本次未派出'): void {
+    for (const [id, pending] of this.pending) {
+      if (pending.request.kind === 'delegation' && pending.request.runId === runId) {
+        this.pending.delete(id)
+        clearTimeout(pending.timer)
+        this.emitResolved(pending.sessionId, id, 'reject', pending.surfaceSessionId)
+        pending.settle({ decision: 'reject', note: reason })
+      }
+    }
   }
 
   abortAllForSession(sessionId: string, reason = '会话已中断,本次未执行'): void {

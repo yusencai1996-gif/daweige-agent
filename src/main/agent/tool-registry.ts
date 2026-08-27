@@ -58,6 +58,11 @@ export interface ToolRegistryDeps {
   roleRulesTools?: () => AgentTool[]
   /** 批3 orchestrator 注入真实实现;本批缺省为安全拒绝的 schema 骨架。 */
   managerTools?: () => AgentTool[]
+  /**
+   * 0.4.0 C3:run_command 工具工厂(按会话注入写根/capability/审批上下文)。
+   * 三种上下文都可提供(各自写根不同);未提供=该上下文没有命令能力(安全缺省)。
+   */
+  runCommandTool?: () => AgentTool | undefined
 }
 
 export type ToolContext = 'regular-worker' | 'manager' | 'delegated-worker'
@@ -67,6 +72,7 @@ export function buildTools(
   context: ToolContext = 'regular-worker',
 ): AgentTool[] {
   const toolDeps: ToolDeps = { ops: deps.ops, trash: deps.trash }
+  const runCommand = deps.runCommandTool?.()
   const fileTools = [
     createReadFileTool(toolDeps),
     createListDirectoryTool(toolDeps),
@@ -85,15 +91,17 @@ export function buildTools(
     return [
       ...(deps.memoryTools?.() ?? []),
       ...(deps.managerTools?.() ?? createManagerCollaborationSkeletonTools()),
+      ...(runCommand ? [runCommand] : []),
     ]
   }
   if (context === 'delegated-worker') {
-    return [...fileTools, ...(deps.roleRulesTools?.() ?? [])]
+    return [...fileTools, ...(deps.roleRulesTools?.() ?? []), ...(runCommand ? [runCommand] : [])]
   }
   return [
     ...fileTools,
     ...(deps.memoryTools?.() ?? []),
     ...(deps.roleRulesTools?.() ?? []),
+    ...(runCommand ? [runCommand] : []),
   ]
 }
 

@@ -1,0 +1,254 @@
+/**
+ * 飞白皴笔 · 公共形态层(0.4.0 B1)
+ * 蓝本:shuimo-frontend-design option-a/shape.css + frontend-reference A 主题(已获授权直抄适配)。
+ * 三要素:不规则笔触(非对称圆角+手写倾角)/ 飞白漏纸(条纹叠层)/ 笔锋提按(渐变拼笔形)。
+ * 红线:只动形不动色——本文件所有颜色一律 color-mix 派生自 tokens.css 既有六值,零新色;
+ *       不改 DOM/逻辑,形态规则集中在此、最后加载(main.tsx),同特异性下覆盖基线样式。
+ * 强度定档(B1 验收整改+2026-08-27 用户设计修正):笔触要"缩略图肉眼可辨",但
+ * **控件内部一律干净底色,不加任何斜纹/条纹 background-image 底纹**(识档 §二修正):
+ * 飞白只落在边框/笔触本体——非对称圆角、2px 笔触边、border-image 枯笔断续、
+ * 积墨圆点、朱砂聚焦、转锋弧;进度条的飞白横纹属"笔迹推进"笔画本体(口令保留)。
+ * 注:原生 radio/checkbox/switch/range 当前应用中尚无实例;其形态口令见
+ *     docs/design/reference/feibai-cunbi-recognition.md,待后续批次引入控件时套用。
+ */
+:root {
+  /* —— 非对称圆角组:角不端正 = 起笔收笔 —— */
+  --fb-radius: 5px 7px 4px 6px;                            /* 按钮/输入框 */
+  --fb-radius-sm: 4px 3px 5px 3px;                         /* 小钮/复选框 */
+  --fb-radius-ring: 48% 52% 51% 49% / 53% 47% 52% 48%;     /* 墨环(单选口令) */
+  --fb-radius-dot: 46% 54% 58% 42% / 52% 45% 55% 48%;      /* 积墨点 */
+  --fb-radius-loader: 47% 53% 52% 48% / 50% 46% 54% 50%;   /* 转锋运笔弧 */
+
+  /* —— 手写倾角(rotate 独立属性,不与 :active 的 transform 互覆) —— */
+  --fb-tilt-btn: -0.6deg;
+  --fb-tilt-line: -0.3deg;
+
+  /* —— 积墨圆点:蓝本 radial 三段浓淡(84%/62%/74%) —— */
+  --fb-ink-blob: radial-gradient(
+    circle at 38% 32%,
+    color-mix(in srgb, var(--accent) 84%, var(--ink)),
+    var(--accent) 62%,
+    color-mix(in srgb, var(--accent) 74%, transparent)
+  );
+
+  /* —— 分割线:一笔交界,两端自然收笔 —— */
+  --fb-divider-ink: linear-gradient(90deg, transparent 0, var(--line) 9%, var(--line) 91%, transparent 100%);
+
+  /* —— 转锋运笔:加载弧节奏(蓝本 900ms) —— */
+  --fb-spin-duration: 0.9s;
+}
+
+/* ============ 按钮:枯笔写成,非对称圆角+2px 笔触边+手写倾角;内部干净底色 ============ */
+.btn {
+  border-width: 2px;
+  border-radius: var(--fb-radius);
+  rotate: var(--fb-tilt-btn);
+  transition:
+    background-color 0.15s cubic-bezier(0.2, 0, 0, 1),
+    color 0.15s cubic-bezier(0.2, 0, 0, 1),
+    transform 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+/* 主按钮:墨色实底,边框同步深化一笔(内部不加底纹) */
+.btn-primary {
+  border-color: color-mix(in srgb, var(--ink) 78%, #000);
+}
+/* 按下:纸面下沉一笔(rotate 属性独立,倾角不丢) */
+.btn:active:not([disabled]) {
+  transform: translateY(1px);
+}
+.btn-sm {
+  border-radius: var(--fb-radius-sm);
+}
+/* 禁用:虚线收笔,不可操作的"飞白虚锋" */
+.btn[disabled] {
+  border-style: dashed;
+}
+
+/* 图标/文字小钮:统一手写小圆角(不加大改小、不动布局) */
+.composer-tool-btn,
+.composer-stop-btn,
+.session-menu-btn,
+.role-menu-btn,
+.role-menu-item,
+.sidebar-settings-btn,
+.migration-banner-close,
+.reminder-dismiss,
+.thinking-toggle,
+.menu-btn,
+.role-new-session,
+.archive-tab,
+.usage-switch-btn,
+.provider-tab {
+  border-radius: var(--fb-radius-sm);
+}
+.composer-stop-btn {
+  border-width: 1.5px;
+}
+/* 窄窗「会话」抽屉钮:禁止折行(400px 档曾把「会话」两字挤竖排) */
+.menu-btn {
+  white-space: nowrap;
+}
+
+/* ============ 输入框:笔触边框,聚焦=朱砂描边呼应;内部干净底色 ============ */
+.text-input,
+.composer textarea,
+.rename-input,
+.rules-textarea,
+.wizard-guardrails,
+.provider-select,
+.thinking-select {
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--ink) 30%, transparent);
+  border-radius: var(--fb-radius);
+}
+.text-input:focus-visible,
+.composer textarea:focus-visible,
+.rename-input:focus-visible,
+.rules-textarea:focus-visible,
+.wizard-guardrails:focus-visible,
+.provider-select:focus-visible,
+.thinking-select:focus-visible {
+  border-color: var(--accent);
+}
+
+/* ============ 单选/选中语义:一笔圈点(积墨圆点 9px+radial 三段) ============ */
+.provider-tab.active::before {
+  left: 8px;
+  width: 9px;
+  height: 9px;
+  background: var(--fb-ink-blob);
+}
+/* 向导模板选中:朱砂描边旁补一枚积墨点(圈点批注意象) */
+.wizard-tpl {
+  position: relative;
+}
+.wizard-tpl.selected::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--fb-radius-dot);
+  background: var(--fb-ink-blob);
+}
+/* 状态点/步骤点:几何正圆 → 积墨点(颜色一律不动;尺寸提到 9px 可辨) */
+.wizard-dot,
+.cred-status-dot,
+.status-dot,
+.delegation-dot,
+.tool-status-dot,
+.reminder-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--fb-radius-dot);
+}
+.wizard-dot.on {
+  background: var(--fb-ink-blob);
+}
+.session-item.active::before {
+  top: 16px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--fb-radius-dot);
+}
+
+/* ============ 分割线:一笔交界,两端收笔 ============ */
+/* border-image 覆盖既有 border 的纯色绘制,两端渐隐;元素只有一条边有宽度,其余边不受影响 */
+.sidebar-head,
+.sidebar-foot,
+.model-area,
+.delegation-detail,
+.usage-delegation-list {
+  border-image: var(--fb-divider-ink) 1;
+}
+
+/* ============ 加载:转锋运笔弧(3/4 残缺圆环,起笔尖收笔钝) ============ */
+/* 运行中的呼吸点升级为旋转枯笔弧:静态时仍是一道残缺墨弧 */
+.status-dot.running,
+.delegation-dot.active,
+.tool-status.running .tool-status-dot {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+  border: 2px solid transparent;
+  border-top-color: var(--ink);
+  border-right-color: color-mix(in srgb, var(--ink) 45%, transparent);
+  border-radius: var(--fb-radius-loader);
+  /* 基态的 translateY(-1px) 与 keyframes 的 rotate 函数列表不同,矩阵插值会把
+     旋转整个吞掉(rotate(360°)=单位阵),圈永远静止(用户 0827 真机实测)——显式归零 */
+  transform: none;
+  animation: fb-brush-spin var(--fb-spin-duration) linear infinite;
+}
+@keyframes fb-brush-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============ 进度:笔迹推进(设置页更新下载条;usage 图表归批 3 不动) ============ */
+/* 中段飞白横纹属"笔迹推进"的笔画本体(识档 §三口令),非控件内部底纹,保留 */
+.update-progress {
+  height: 5px;
+  border-radius: 3px 4px 3px 4px;
+  background:
+    repeating-linear-gradient(100deg, transparent 0 3px, color-mix(in srgb, var(--paper) 52%, transparent) 3px 5px),
+    var(--line);
+}
+.update-progress-fill {
+  border-radius: 3px 4px 3px 4px;
+  background:
+    repeating-linear-gradient(100deg, transparent 0 4px, color-mix(in srgb, var(--paper) 30%, transparent) 4px 6px),
+    var(--accent);
+}
+
+/* ============ 减少动画:笔触动画降级为静态形(弧静止=残缺墨弧) ============ */
+@media (prefers-reduced-motion: reduce) {
+  /* 状态指示器不全停(用户 0827 真机实测):降级为慢速呼吸,保住"还在干活"的信号 */
+  .status-dot.running,
+  .delegation-dot.active,
+  .tool-status.running .tool-status-dot {
+    animation: tool-pulse 1.6s ease-in-out infinite;
+  }
+  .btn:active:not([disabled]) {
+    transform: none;
+  }
+}
+
+/* ============ B2 卡片类:笔触语言推到卡片层(内部一律干净底色) ============ */
+/* 卡片:非对称圆角+1.5px 笔触边;顶边让位给一道两端收笔的笔触线(蓝本 state-sample 手法) */
+.approval-card,
+.delegation-card,
+.draft-card,
+.run-detail-state,
+.reminder-banner {
+  position: relative;
+  border-width: 1.5px;
+  border-top-width: 0;
+  border-color: color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 3px 6px 4px 7px;
+}
+.approval-card::before,
+.delegation-card::before,
+.draft-card::before,
+.run-detail-state::before,
+.reminder-banner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 2px 3px 2px 4px;
+  /* 框线本体的枯笔断续:两端收笔渐变(识档 §二修正允许的边框笔触,无内部条纹) */
+  background: linear-gradient(90deg, transparent 0, var(--line) 9%, var(--line) 91%, transparent 100%);
+  transform: rotate(-0.25deg);
+  pointer-events: none;
+}
+/* 思考块折叠竖线:一笔竖笔,上下两端收笔 */
+.thinking-body {
+  border-image: var(--fb-divider-vertical) 1;
+}

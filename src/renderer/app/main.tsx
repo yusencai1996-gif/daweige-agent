@@ -21,6 +21,8 @@ import '../styles/reminders.css'
 import '../features/roles/roles.css'
 import '../features/manager/manager.css'
 import '../features/usage/usage.css'
+// 飞白皴笔形态层(0.4.0 B1):必须最后加载,同特异性下覆盖基线样式
+import '../styles/shape-tokens.css'
 
 /**
  * 渲染进程入口。
@@ -92,7 +94,7 @@ function wireDemoBehaviors(mock: MockBridge): void {
     modelId: 'kimi-for-coding',
     createdAt: now - 7_200_000,
     updatedAt: now - 600_000,
-    messageCount: 5,
+    messageCount: 6,
   }
   const managerHistory: ChatMessage[] = [
     {
@@ -150,6 +152,35 @@ function wireDemoBehaviors(mock: MockBridge): void {
 { "displayName": "坏掉的草稿", "guardrails":
 \`\`\``,
       createdAt: now - 5_700_000,
+    },
+    {
+      kind: 'chat',
+      // C4 演示:run_command 工具过程块(CommandBlock 刷新恢复渲染路径,带终值)
+      role: 'assistant',
+      id: 'demo-mgr-a4',
+      text: '我先在沙箱里跑了一条只读命令,看看报表文件夹里都有什么:',
+      createdAt: now - 5_650_000,
+      toolExecutions: [
+        {
+          toolCallId: 'demo-cmd-1',
+          toolName: 'run_command',
+          displayName: '运行命令',
+          status: 'succeeded' as const,
+          summary: '列出 D:\\门店报表 的文件清单',
+          command: {
+            command: 'cmd /c "dir /b D:\\门店报表"',
+            cwd: 'C:\\Users\\demo\\Documents\\测试工作区',
+            exitCode: 0,
+            durationMs: 420,
+            timedOut: false,
+            cancelled: false,
+            stdout: '2026-06报表.xlsx\n2026-07报表.xlsx\n2026-08报表.xlsx\n汇总结果.md',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          },
+        },
+      ],
     },
   ]
   const demoSummary: SessionSummary = {
@@ -240,9 +271,14 @@ function wireDemoBehaviors(mock: MockBridge): void {
     targetRoleId: 'agent-a1b2c3d4e5f6',
     targetRoleName: '小编',
     internalSessionId: null,
-    parentRunId: null,
+    parentRunId: 'run-a1b2c3d4e5f60718',
     status: 'awaiting-approval',
     waitingReason: null,
+    graphId: 'graph-0123456789abcdef',
+    dependsOnRunIds: ['run-a1b2c3d4e5f60718'],
+    queueReason: null,
+    followupCount: 0,
+    interruptSource: null,
     taskBrief: '把 D:\\稿件草稿 里的素材整理成一篇 800 字短文',
     allowedWorkspacePaths: ['D:\\稿件草稿'],
     usage: {

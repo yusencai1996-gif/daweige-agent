@@ -32,8 +32,8 @@ describe('IPC 契约:通道冻结', () => {
     for (const ch of INVOKE_CHANNELS) {
       expect(isInvokeChannel(ch), `通道 ${ch} 不在清单中`).toBe(true)
     }
-    expect(INVOKE_CHANNELS).toHaveLength(42)
-    expect(new Set(INVOKE_CHANNELS).size).toBe(42)
+    expect(INVOKE_CHANNELS).toHaveLength(46)
+    expect(new Set(INVOKE_CHANNELS).size).toBe(46)
   })
 
   it('request 非 void 的通道必须注册运行时 schema(0.2.1 热修教训:漏注册→"不接受任何参数")', () => {
@@ -54,6 +54,7 @@ describe('IPC 契约:通道冻结', () => {
       'window:toggleMaximize',
       'window:close',
       'settings:get',
+      'managerWorkspace:get',
       'credential:status',
     ])
     expect(INVOKE_CHANNELS).toHaveLength(voidChannels.size + Object.keys(REQUEST_SCHEMAS).length)
@@ -100,12 +101,14 @@ describe('IPC 契约:入参运行时校验', () => {
       validateRequest('agentRun:list', { managerSessionId: 'demo-session-manager' }).ok,
     ).toBe(true)
     expect(
-      validateRequest('agentRun:getDetail', { runId: 'run-a1b2c3d4e5f60718' }).ok,
+      validateRequest('agentRun:getDetail', { runId: 'run-a1b2c3d4e5f60718', managerSessionId: 'demo-session-manager' }).ok,
     ).toBe(true)
     for (const runId of ['run-ABC', 'run-a1b2c3d4e5f6071', 'run-a1b2c3d4e5f607188', 'agent-a1b2c3d4e5f6', '']) {
-      const r = validateRequest('agentRun:getDetail', { runId })
+      const r = validateRequest('agentRun:getDetail', { runId, managerSessionId: 'demo-session-manager' })
       expect(r.ok, `runId ${runId} 应被拒绝`).toBe(false)
     }
+    // 缺 managerSessionId 拒(阶段复审整改:ownership 入参必填)
+    expect(validateRequest('agentRun:getDetail', { runId: 'run-a1b2c3d4e5f60718' }).ok).toBe(false)
     expect(validateRequest('agentRun:list', {}).ok).toBe(false)
   })
 

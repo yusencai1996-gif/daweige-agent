@@ -115,7 +115,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .tool-status.running .tool-status-dot {
-    animation: none;
+    /* 状态指示不全停(用户 0827 真机实测"圈不会转"像卡死):降级为慢速呼吸 */
+    animation: tool-pulse 1.6s ease-in-out infinite;
   }
 }
 
@@ -226,8 +227,7 @@
   stroke-linecap: round;
 }
 
-/* 工具行紧凑下拉(模型 / 思考强度) */
-.provider-select,
+/* 工具行紧凑下拉(思考强度);模型选择升级为弹出面板,见下方 model-switch 区 */
 .thinking-select {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -236,6 +236,90 @@
   font-size: 12px;
   max-width: 132px;
   color: var(--ink);
+}
+
+/* ============ 模型选择器(对话区右下角):按钮显示当前模型 id,向上弹「启用池」面板 ============ */
+.model-switch {
+  position: relative;
+}
+.model-switch-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 148px;
+  padding: 2px 6px;
+  border: 1.5px solid color-mix(in srgb, var(--ink) 30%, transparent);
+  border-radius: var(--fb-radius);
+  background: transparent;
+  font-size: 12px;
+  color: var(--ink);
+  transition: border-color .15s cubic-bezier(.2, 0, 0, 1), color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.model-switch-btn:hover,
+.model-switch-btn:focus-visible {
+  border-color: var(--accent);
+}
+.model-switch-model {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.model-switch-caret {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+/* 面板向上弹(贴着输入区上沿),右对齐锚在控件上;窄窗用 max-width 兜住不溢出 */
+.model-switch-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 200px;
+  max-width: min(280px, calc(100vw - 48px));
+  max-height: 264px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface-strong);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 3px 6px 4px 7px;
+  box-shadow: 0 4px 14px var(--ink-shadow-14);
+}
+.model-switch-group {
+  flex: 0 0 auto;
+  padding: 5px 8px 2px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+.model-switch-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--fb-radius-sm);
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.model-switch-item:hover {
+  background: var(--ink-hover-06);
+}
+.model-switch-item.current {
+  color: var(--accent);
+}
+.model-switch-guide {
+  padding: 4px 8px 2px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
 }
 
 /* 流式中的停止按钮:方块图标,hover 朱砂 */
@@ -319,4 +403,135 @@
   color: var(--muted);
   font-size: 12.5px;
   text-align: center;
+}
+
+/* ============ C4 命令过程块(消息流工具过程) ============ */
+.command-block {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px 7px 4px 6px;
+  background: var(--surface);
+  padding: 8px 10px;
+}
+.command-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+/* 状态徽标:积墨点系;运行中=转锋弧(keyframes 复用 shape-tokens 的 fb-brush-spin) */
+.command-badge {
+  width: 9px;
+  height: 9px;
+  border-radius: 46% 54% 58% 42% / 52% 45% 55% 48%;
+  flex: 0 0 auto;
+}
+.command-badge-ok {
+  background: var(--ink);
+}
+.command-badge-fail {
+  background: var(--accent);
+}
+.command-badge-muted {
+  background: var(--muted);
+}
+.command-badge-spin {
+  width: 10px;
+  height: 10px;
+  border: 2px solid transparent;
+  border-top-color: var(--ink);
+  border-right-color: color-mix(in srgb, var(--ink) 45%, transparent);
+  border-radius: 47% 53% 52% 48% / 50% 46% 54% 50%;
+  animation: fb-brush-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .command-badge-spin {
+    animation: none;
+  }
+}
+/* 命令一行:等宽原文一字不改写,横向滚动不折断 */
+.command-line {
+  flex: 1;
+  min-width: 120px;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 2px 0;
+}
+.command-state {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+.command-duration {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.command-toggle {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.command-toggle:hover {
+  color: var(--ink);
+}
+.command-body {
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  border-image: linear-gradient(90deg, transparent 0, var(--line) 9%, var(--line) 91%, transparent 100%) 1;
+  padding-top: 8px;
+}
+.command-output {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--ink-hover-04);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 220px;
+}
+.command-output code {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre;
+}
+/* stderr 分栏:朱砂弱边标出(数据无时间戳,不伪合并时间序) */
+.command-output-err {
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 5%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, transparent);
+}
+.command-output-label {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.command-output-label-err {
+  color: var(--accent);
+}
+.command-truncated {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.command-exit {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.command-exit.nonzero {
+  color: var(--accent);
+}
+.command-exit-cwd {
+  word-break: break-all;
 }

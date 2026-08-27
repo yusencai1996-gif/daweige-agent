@@ -534,14 +534,15 @@ describe.skipIf(!RUN)('0.2.0 角色化前端自检(MockBridge)', () => {
     ).toBeVisible()
   })
 
-  it('场景A-10:设置页拉模型列表→下拉选中→回写 modelId→顶部切换跟随;失败回退有弱提示', async () => {
+  it('场景A-10(改版):设置页拉模型列表→清单勾选进池/点名字设当前→回写;失败回退有弱提示', async () => {
     await page.getByRole('button', { name: '设置', exact: true }).click()
 
-    // Kimi(演示数据已配置 key):拉列表 → 固定单项下拉
+    // Kimi(演示数据已配置 key):拉列表 → 固定单行清单,kimi-for-coding 带上下文/默认信息
     await page.getByRole('button', { name: '获取模型列表' }).click()
-    const kimiSelect = page.getByLabel('Kimi 模型')
-    await expect(kimiSelect).toBeVisible()
-    await expect(kimiSelect.locator('option')).toHaveText(['kimi-for-coding · 26 万上下文 · 默认'])
+    const kimiList = page.getByLabel('Kimi 模型')
+    await expect(kimiList).toBeVisible()
+    await expect(kimiList.getByText('kimi-for-coding', { exact: true })).toBeVisible()
+    await expect(kimiList.getByText('26 万上下文')).toBeVisible()
 
     // GLM(国内):未填 key 时按钮禁用;填 key 保存后可拉
     await page.getByRole('tab', { name: 'GLM(国内)' }).click()
@@ -549,16 +550,31 @@ describe.skipIf(!RUN)('0.2.0 角色化前端自检(MockBridge)', () => {
     await page.getByLabel('填入 key').fill('sk-demo-glm-cn')
     await page.getByRole('button', { name: '保存 key' }).click()
     await page.getByRole('button', { name: '获取模型列表' }).click()
-    const glmSelect = page.getByLabel('GLM(国内) 模型')
-    await expect(glmSelect).toBeVisible()
-    await expect(glmSelect.locator('option')).toHaveText([
-      'glm-4.7 · 20 万上下文 · 默认',
-      'glm-4.7-air · 13 万上下文',
-      'glm-4.7-flashx · 上下文未知',
-    ])
+    const glmList = page.getByLabel('GLM(国内) 模型')
+    await expect(glmList.getByText('glm-4.7-flashx', { exact: true })).toBeVisible()
+    await expect(glmList.getByText('13 万上下文')).toBeVisible()
 
-    // 选中 online 模型 → 立刻写回 settings.providerSelection.modelId
-    await glmSelect.selectOption('glm-4.7-air')
+    // 勾选框=进出启用池:勾上 glm-4.7-air → settings:update 带上 enabledModels
+    await glmList.getByLabel('启用模型 glm-4.7-air').check()
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const mock = (
+            globalThis as unknown as {
+              __daweigeMock: { calls: { channel: string; payload: unknown }[] }
+            }
+          ).__daweigeMock
+          const call = [...mock.calls]
+            .reverse()
+            .find((c) => c.channel === 'settings:update')
+          return (call?.payload as { settings: { enabledModels?: { providerId: string; modelId: string }[] } })
+            ?.settings.enabledModels
+        }),
+      )
+      .toEqual([{ providerId: 'zai-coding-cn', modelId: 'glm-4.7-air' }])
+
+    // 点名字=设为当前使用 → 立刻写回 settings.providerSelection.modelId
+    await glmList.getByText('glm-4.7-air', { exact: true }).click()
     await expect
       .poll(async () =>
         page.evaluate(() => {
@@ -576,8 +592,9 @@ describe.skipIf(!RUN)('0.2.0 角色化前端自检(MockBridge)', () => {
       )
       .toBe('glm-4.7-air')
 
-    // 回聊天:输入框工具行的模型切换跟随(tooltip 带完整模型名)
+    // 回聊天:输入框工具行按钮显示当前模型 id(tooltip 带完整模型名)
     await page.getByRole('button', { name: '← 回到聊天' }).click()
+    await expect(page.locator('#provider-select')).toHaveText(/glm-4\.7-air/)
     await expect(page.locator('#provider-select')).toHaveAttribute('title', /glm-4\.7-air/)
 
     // DeepSeek:演示在线拉取失败回退默认列表 → notice 弱提示
@@ -587,9 +604,8 @@ describe.skipIf(!RUN)('0.2.0 角色化前端自检(MockBridge)', () => {
     await page.getByRole('button', { name: '保存 key' }).click()
     await page.getByRole('button', { name: '获取模型列表' }).click()
     await expect(page.getByText('在线拉取失败,先显示默认列表')).toBeVisible()
-    await expect(page.getByLabel('DeepSeek 模型').locator('option')).toHaveText([
-      'deepseek-v4-flash · 100 万上下文 · 默认',
-    ])
+    const dsList = page.getByLabel('DeepSeek 模型')
+    await expect(dsList.getByText('deepseek-v4-flash', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '← 回到聊天' }).click()
   })
 
@@ -666,5 +682,115 @@ describe.skipIf(!RUN)('0.2.0 角色化前端自检(MockBridge)', () => {
     )) as string
     expect(transform).not.toBe('none')
     await page.setViewportSize({ width: 1280, height: 840 })
+  })
+
+  it('场景D1(0.4.0 D):协作链族谱——宽屏 DAG/窄屏单列/链摘要卡/打断确认走对应 IPC', { timeout: 20_000 }, async () => {
+    const callsOf = (channel: string) =>
+      page.evaluate(
+        (ch) =>
+          (globalThis as unknown as { __daweigeMock: { calls: { channel: string; payload: unknown }[] } })
+            .__daweigeMock.calls.filter((c) => c.channel === ch)
+            .map((c) => c.payload as Record<string, unknown>),
+        channel,
+      )
+
+    // 打开账房 completed 卡的详情页(该卡在交棒链 graph-0123456789abcdef 上,链上有两节点)
+    const mgrSession = page.locator('.manager-card .session-item', { hasText: '和小柊聊天' })
+    if (!(await mgrSession.isVisible().catch(() => false))) {
+      await page.locator('.manager-card .role-card-title').click()
+    }
+    await mgrSession.click({ position: { x: 12, y: 10 } })
+    const completed = page.locator('.delegation-card', { hasText: '账房干完了' })
+
+    // 卡头链摘要:同 graph 多节点才出;点开浮层能看到两位伙伴
+    await expect(completed.getByRole('button', { name: /协作链 2 节点/ })).toBeVisible()
+    await completed.getByRole('button', { name: /协作链 2 节点/ }).click()
+    await expect(page.locator('.delegation-chain-pop')).toBeVisible()
+    await expect(page.locator('.delegation-chain-pop')).toContainText('账房')
+    await expect(page.locator('.delegation-chain-pop')).toContainText('小编')
+    await completed.getByRole('button', { name: /协作链 2 节点/ }).click()
+    await expect(page.locator('.delegation-chain-pop')).toHaveCount(0)
+
+    // 详情页顶部族谱区块:getGraph 懒加载(DTO 直出摘要头)+ 宽屏 DAG
+    await completed.getByRole('button', { name: '查看完整过程' }).click()
+    await expect
+      .poll(async () =>
+        (await callsOf('agentRun:getGraph')).map(
+          (p) => (p as { graphId: string }).graphId,
+        ),
+      )
+      .toContain('graph-0123456789abcdef')
+    const graphBlock = page.locator('.run-graph')
+    await expect(graphBlock.getByText(/协作链/)).toBeVisible()
+    await expect(graphBlock.getByText(/2 节点/)).toBeVisible()
+    await expect(graphBlock.getByText(/总 token/)).toBeVisible()
+    // DAG:两节点一列一层;handoff 边一条带「交棒」标
+    await expect(page.locator('.run-graph-col')).toHaveCount(2)
+    await expect(page.locator('.run-node', { hasText: '账房' })).toBeVisible()
+    await expect(page.locator('.run-node', { hasText: '小编' })).toBeVisible()
+    await expect(page.locator('.run-graph-wire.handoff')).toHaveCount(1)
+    await expect(graphBlock.getByText('交棒')).toBeVisible()
+    // 当前 run 高亮(朱砂聚焦):打开的是账房那条
+    await expect(page.locator('.run-node.is-current', { hasText: '账房' })).toBeVisible()
+
+    // 节点点击换到下游 run 的详情页
+    await page.locator('button.run-node', { hasText: '小编' }).click()
+    await expect(page.getByRole('heading', { name: '小编的干活过程' })).toBeVisible()
+    await expect(page.locator('.run-node.is-current', { hasText: '小编' })).toBeVisible()
+
+    // 窄屏(<1000px):拓扑序单列,边转「来自:账房」文字行,wires 不画线
+    await page.setViewportSize({ width: 720, height: 900 })
+    await expect(page.locator('.run-graph-list')).toBeVisible()
+    await expect(page.locator('.run-item-upstream', { hasText: '来自:账房(交棒)' })).toBeVisible()
+    await expect(page.locator('.run-graph-wires')).toBeHidden()
+    await page.setViewportSize({ width: 1280, height: 840 })
+
+    // 返回小柊,试打断入口:终态的账房 completed 没有打断按钮;
+    // mock 的 agentRun:list 重开会话会回到种子态(awaiting),先推一条 running 事件模拟主进程推进
+    await page.getByRole('button', { name: '‹ 返回小柊' }).click()
+    await expect(completed.getByRole('button', { name: '打断' })).toHaveCount(0)
+    await page.evaluate(async () => {
+      const mock = (
+        globalThis as unknown as {
+          __daweigeMock: {
+            invoke: (
+              channel: string,
+              payload: Record<string, unknown>,
+            ) => Promise<{ runId: string }[]>
+            emitAgentEvent: (event: Record<string, unknown>) => void
+          }
+        }
+      ).__daweigeMock
+      const runs = await mock.invoke('agentRun:list', { managerSessionId: 'demo-session-manager' })
+      const target = runs.find((r) => r.runId === 'run-b2c3d4e5f6a70829')
+      if (target) {
+        mock.emitAgentEvent({
+          type: 'agent_run_updated',
+          managerSessionId: 'demo-session-manager',
+          run: {
+            ...target,
+            status: 'running',
+            startedAt: Date.now(),
+            internalSessionId: 'demo-run-internal-2',
+          },
+        })
+      }
+    })
+    const runningCard = page.locator('.delegation-card', { hasText: '小编正在干活' })
+    await expect(runningCard.getByRole('button', { name: '打断' })).toBeVisible()
+
+    // 先「先不打」:不发任何 IPC
+    await runningCard.getByRole('button', { name: '打断', exact: true }).click()
+    await expect(runningCard.getByText('确定打断?已完成的产出保留,未完成的不再继续')).toBeVisible()
+    await runningCard.getByRole('button', { name: '先不打' }).click()
+    await expect(runningCard.getByRole('button', { name: '打断', exact: true })).toBeVisible()
+    expect(await callsOf('agentRun:interrupt')).toHaveLength(0)
+
+    // 确认打断:发 agentRun:interrupt(runId + 归属会话)
+    await runningCard.getByRole('button', { name: '打断', exact: true }).click()
+    await runningCard.getByRole('button', { name: '确定打断' }).click()
+    await expect
+      .poll(async () => await callsOf('agentRun:interrupt'))
+      .toEqual([{ runId: 'run-b2c3d4e5f6a70829', managerSessionId: 'demo-session-manager' }])
   })
 })

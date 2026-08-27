@@ -101,7 +101,7 @@ export class RoleMigration {
     let createdRoles = 0
     // 同名不同目录的显示名消歧:basename → 计数;
     // 初始化吃进已有角色名并剥掉「（N）」消歧后缀归一到基础名——
-    // 否则已有 名称+名称（2） 时第三批同名仍会算出 seen=2 再生成一次 名称（2）(复核未闭合点)
+    // 否则已有 名称+名称（2） 时第三批同名仍会算出 seen=2 再生成一次 名称（2）(复审未闭合点)
     const nameCounts = new Map<string, number>()
     for (const existing of await this.repository.listRoleRows()) {
       const base = existing.displayName.replace(/（\d+）$/, '')
@@ -191,7 +191,7 @@ export class RoleMigration {
     const stagingDirRoot = stagingRoot(this.userDataPath)
     const { readdir, readFile } = await import('node:fs/promises')
     // staging 根不存在≠无待抢救者:DB 角色仍可能缺家目录(上轮 promote 前退出且 staging 已被清),
-    // 空列表继续走"无匹配→重建空守则"分支(复核 B-02 未闭合点)
+    // 空列表继续走"无匹配→重建空守则"分支(复审 B-02 未闭合点)
     let stagingRuns: string[] = []
     try {
       stagingRuns = await readdir(stagingDirRoot)

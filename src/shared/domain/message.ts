@@ -24,6 +24,11 @@ export interface ToolExecutionInfo {
   readonly summary?: string
   /** 失败原因(中文,可直接展示)。 */
   readonly error?: string
+  /**
+   * 命令执行详情(0.4.0 C,toolName='run_command' 时携带):
+   * 刷新后从 pi 工具结果重建;实时输出靠 command_output 推送,恢复态只有终值。
+   */
+  readonly command?: import('./command').CommandResultDetails
 }
 
 export type ChatMessage =

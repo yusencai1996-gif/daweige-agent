@@ -11,8 +11,9 @@ import type { ConnectivityResult } from '../../../shared/ipc/contracts'
 import { MemoryPanel } from './MemoryPanel'
 import { AboutPanel } from './AboutPanel'
 import { ModelPicker } from './ModelPicker'
+import { ManagerWorkspacePanel } from './ManagerWorkspacePanel'
 
-type SettingsSection = 'keys' | 'memory' | 'about'
+type SettingsSection = 'keys' | 'memory' | 'workspace' | 'about'
 
 interface SettingsViewProps {
   readonly bridge: DaweigeBridge
@@ -21,9 +22,13 @@ interface SettingsViewProps {
   readonly onSaveCredential: (providerId: ProviderId, apiKey: string) => Promise<boolean>
   readonly onDeleteCredential: (providerId: ProviderId) => Promise<void>
   readonly onTestCredential: (providerId: ProviderId) => Promise<ConnectivityResult>
-  /** 全局当前模型选择(A-10):厂商面板里的模型下拉选中即写回它。 */
+  /** 全局当前模型选择(A-10):厂商面板里的模型清单点名字即写回它。 */
   readonly selection: ProviderSelection
   readonly onSelectProvider: (selection: ProviderSelection) => void
+  /** 启用池(settings.enabledModels):勾选框勾选态的数据源,空数组=还没勾过。 */
+  readonly enabledModels: readonly ProviderSelection[]
+  /** 勾选/取消一个常用模型(写 settings.enabledModels 持久化)。 */
+  readonly onToggleEnabledModel: (item: ProviderSelection) => void
   readonly appVersion: string
   readonly updateState: UpdateState
   readonly onCheckUpdate: () => void
@@ -52,6 +57,8 @@ export function SettingsView({
   onTestCredential,
   selection,
   onSelectProvider,
+  enabledModels,
+  onToggleEnabledModel,
   appVersion,
   updateState,
   onCheckUpdate,
@@ -153,6 +160,15 @@ export function SettingsView({
           <button
             type="button"
             role="tab"
+            aria-selected={section === 'workspace'}
+            className={section === 'workspace' ? 'provider-tab active' : 'provider-tab'}
+            onClick={() => setSection('workspace')}
+          >
+            总管工作区
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={section === 'about'}
             className={section === 'about' ? 'provider-tab active' : 'provider-tab'}
             onClick={() => setSection('about')}
@@ -163,6 +179,8 @@ export function SettingsView({
 
         {section === 'memory' ? (
           <MemoryPanel bridge={bridge} />
+        ) : section === 'workspace' ? (
+          <ManagerWorkspacePanel bridge={bridge} />
         ) : section === 'about' ? (
           <AboutPanel
             appVersion={appVersion}
@@ -268,14 +286,16 @@ export function SettingsView({
               </div>
             )}
 
-            {/* A-10:模型选择——拉列表下拉选中即持久化;key 随厂商切换重置面板状态 */}
+            {/* A-10 改版:模型清单——点名字=设为当前,勾选框=进出启用池;key 随厂商切换重置面板状态 */}
             <ModelPicker
               key={provider.id}
               bridge={bridge}
               provider={provider}
               configured={status?.configured ?? false}
               selection={selection}
+              enabledModels={enabledModels}
               onSelectProvider={onSelectProvider}
+              onToggleEnabledModel={onToggleEnabledModel}
             />
           </div>
         )}

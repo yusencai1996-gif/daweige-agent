@@ -109,7 +109,22 @@ export const AgentRunListRequestSchema = Type.Object(
 )
 
 export const AgentRunGetDetailRequestSchema = Type.Object(
-  { runId: AgentRunIdSchema },
+  { runId: AgentRunIdSchema, managerSessionId: Type.String({ minLength: 1, maxLength: 128 }) },
+  strict,
+)
+
+/** graph- + 16 位小写十六进制(0.4.0 D;主进程生成,入参只做形状校验,归属在 handler 层校验)。 */
+export const AgentGraphIdSchema = Type.RegExp(/^graph-[a-f0-9]{16}$/, {
+  message: '协作链编号不合法',
+})
+
+export const AgentRunGetGraphRequestSchema = Type.Object(
+  { graphId: AgentGraphIdSchema, managerSessionId: SessionIdSchema },
+  strict,
+)
+
+export const AgentRunInterruptRequestSchema = Type.Object(
+  { runId: AgentRunIdSchema, managerSessionId: SessionIdSchema },
   strict,
 )
 
@@ -214,10 +229,14 @@ export const ProviderSelectionSchema = Type.Object(
 export const SettingsSchema = Type.Object(
   {
     providerSelection: ProviderSelectionSchema,
+    enabledModels: Type.Optional(Type.Array(ProviderSelectionSchema, { maxItems: 32, uniqueItems: true })),
     windowBounds: Type.Optional(WindowBoundsSchema),
     lastActiveSessionId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
     thinkingLevel: Type.Optional(
       Type.Union([Type.Literal('off'), Type.Literal('low'), Type.Literal('high')]),
+    ),
+    managerWorkspacePath: Type.Optional(
+      Type.String({ minLength: 2, maxLength: 1024 }),
     ),
   },
   strict,
@@ -225,6 +244,23 @@ export const SettingsSchema = Type.Object(
 
 export const SettingsUpdateRequestSchema = Type.Object(
   { settings: SettingsSchema },
+  strict,
+)
+
+export const ManagerWorkspaceStateSchema = Type.Object(
+  {
+    effectivePath: Type.String({ minLength: 2, maxLength: 1024 }),
+    isDefault: Type.Boolean(),
+    restartRequired: Type.Boolean(),
+    cleanupWarning: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+  },
+  strict,
+)
+
+export const ManagerWorkspaceMigrateRequestSchema = Type.Object(
+  {
+    targetPath: Type.String({ minLength: 2, maxLength: 1024 }),
+  },
   strict,
 )
 
@@ -285,10 +321,13 @@ export const REQUEST_SCHEMAS: Readonly<Partial<Record<ContractChannel, TObject>>
   'session:restore': SessionRestoreRequestSchema,
   'agentRun:list': AgentRunListRequestSchema,
   'agentRun:getDetail': AgentRunGetDetailRequestSchema,
+  'agentRun:getGraph': AgentRunGetGraphRequestSchema,
+  'agentRun:interrupt': AgentRunInterruptRequestSchema,
   'message:send': MessageSendRequestSchema,
   'message:abort': MessageAbortRequestSchema,
   'approval:respond': ApprovalRespondRequestSchema,
   'settings:update': SettingsUpdateRequestSchema,
+  'managerWorkspace:migrate': ManagerWorkspaceMigrateRequestSchema,
   'credential:save': CredentialSaveRequestSchema,
   'credential:delete': CredentialDeleteRequestSchema,
   'credential:test': CredentialTestRequestSchema,
@@ -335,7 +374,14 @@ type MutuallyAssignable<Actual, Expected> = [Actual] extends [Expected]
     : false
   : false
 
-type BindCheck<Actual, Expected extends MutuallyAssignable<Actual, Expected> extends true ? unknown : never> =
+/** 深层抹掉契约侧的 readonly 修饰(TypeBox Static 表达不了 readonly 数组,结构一致即视为一致)。 */
+type DeepMutable<T> = T extends readonly (infer U)[]
+  ? DeepMutable<U>[]
+  : T extends object
+    ? { -readonly [K in keyof T]: DeepMutable<T[K]> }
+    : T
+
+type BindCheck<Actual, Expected extends MutuallyAssignable<Actual, DeepMutable<Expected>> extends true ? unknown : never> =
   Expected
 
 export type _BindSessionCreate = BindCheck<
@@ -369,6 +415,10 @@ export type _BindApprovalRespond = BindCheck<
 export type _BindSettingsUpdate = BindCheck<
   Static<typeof SettingsUpdateRequestSchema>,
   import('./contracts').IpcRequestMap['settings:update']['request']
+>
+export type _BindManagerWorkspaceMigrate = BindCheck<
+  Static<typeof ManagerWorkspaceMigrateRequestSchema>,
+  import('./contracts').IpcRequestMap['managerWorkspace:migrate']['request']
 >
 export type _BindCredentialSave = BindCheck<
   Static<typeof CredentialSaveRequestSchema>,
@@ -433,4 +483,12 @@ export type _BindAgentRunList = BindCheck<
 export type _BindAgentRunGetDetail = BindCheck<
   Static<typeof AgentRunGetDetailRequestSchema>,
   import('./contracts').IpcRequestMap['agentRun:getDetail']['request']
+>
+export type _BindAgentRunGetGraph = BindCheck<
+  Static<typeof AgentRunGetGraphRequestSchema>,
+  import('./contracts').IpcRequestMap['agentRun:getGraph']['request']
+>
+export type _BindAgentRunInterrupt = BindCheck<
+  Static<typeof AgentRunInterruptRequestSchema>,
+  import('./contracts').IpcRequestMap['agentRun:interrupt']['request']
 >

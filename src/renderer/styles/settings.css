@@ -282,10 +282,6 @@
   gap: 10px;
   flex-wrap: wrap;
 }
-.model-select {
-  flex: 1;
-  min-width: 220px;
-}
 .model-notice {
   /* 在线拉取失败的弱提示:沿用 form-tip 墨色,不抢戏 */
 }
@@ -296,4 +292,129 @@
 }
 .model-manual .text-input {
   flex: 1;
+}
+
+/* 多选清单(常用模型启用池):每行两个控件语义分开——勾选框=进出池,点名字=设为当前 */
+.model-checklist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.model-check-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--fb-radius-sm);
+  min-width: 0;
+}
+.model-check-item:hover {
+  background: var(--ink-hover-04);
+}
+.model-check-item.current {
+  background: var(--ink-hover-04);
+}
+/* 勾选框(进池):墨色勾,不占朱砂——朱砂留给「当前」标记 */
+.model-check-box {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+.model-check-box[disabled] {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.model-check-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.model-check-item.current .model-check-label {
+  font-weight: 600;
+}
+.model-check-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px 3px 5px 3px;
+  padding: 0 5px;
+}
+.model-tag.current {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 45%, transparent);
+}
+.model-count {
+  font-size: 12px;
+}
+
+/* ============ A-14 总管工作区面板 ============ */
+.workspace-panel {
+  margin-top: 14px;
+}
+.workspace-current {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 长路径折行展示:等宽+break-all,不溢出不省略 */
+.workspace-path {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  word-break: break-all;
+  background: var(--ink-hover-04);
+  border: 1px solid var(--line);
+  border-radius: 5px 7px 4px 6px;
+  padding: 7px 10px;
+}
+.workspace-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.workspace-tag {
+  border: 1px solid var(--line);
+  border-radius: 4px 3px 5px 3px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+/* 已迁移:朱砂细描边标出状态(克制,不做色块) */
+.workspace-tag.migrated {
+  border-color: color-mix(in oklch, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+/* cleanupWarning:朱砂弱档警示(沿用 msg-error 同语言;项目无黄色 token) */
+.workspace-warning {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1.5px solid color-mix(in oklch, var(--accent) 45%, transparent);
+  border-radius: 5px 7px 4px 6px;
+  background: color-mix(in oklch, var(--accent) 6%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1.7;
 }

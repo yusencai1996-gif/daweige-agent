@@ -8,7 +8,7 @@ publish:
     url: https://agent.daweige.host/update/
 
 directories:
-  output: release-v8
+  output: release-v10
   buildResources: build
 
 files:
@@ -18,6 +18,14 @@ files:
 
 # 用户数据(userData:SQLite/密文/记事)由 Electron 运行期写入 %APPDATA%,绝不打进安装包
 asar: true
+
+# 0.4.0 C5:沙箱执行器放 asar 外(process.resourcesPath);哈希清单由构建脚本生成,
+# 运行期 sandbox-process-host 校验失败即拒绝运行命令(fail-closed,不裸跑)
+extraResources:
+  - from: native/daweige-sandbox-helper/target/release/daweige-sandbox-helper.exe
+    to: daweige-sandbox-helper.exe
+  - from: native/daweige-sandbox-helper/target/release/daweige-sandbox-helper.exe.sha256
+    to: daweige-sandbox-helper.exe.sha256
 
 win:
   icon: build/icon.ico

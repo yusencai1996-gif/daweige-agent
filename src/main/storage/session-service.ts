@@ -8,6 +8,7 @@ import type { RoleRepository, SessionBindingRow } from '../roles/role-repository
 import type { RoleService } from '../roles/role-service'
 import { SYSTEM_MANAGER_ROLE_ID } from '../../shared/domain/manager'
 import { systemManagerWorkspacePath } from '../roles/system-manager'
+import type { ManagerWorkspaceResolver } from '../manager-workspace/resolver'
 
 /**
  * 会话领域服务(M2-05/06 + 0.2.0 A3):pi Session ↔ SessionSummary/Detail 映射与 CRUD。
@@ -34,7 +35,33 @@ export class SessionService {
     private readonly roleRepository?: RoleRepository,
     private readonly roleService?: RoleService,
     private readonly userDataPath?: string,
+    /** 0.4.0 A(A-14):总管工作区解析器;注入后 manager 会话的 cwd 一律走它。 */
+    private managerWorkspaceResolver?: ManagerWorkspaceResolver,
   ) {}
+
+  /** 0.4.0 A:注入/替换总管工作区解析器(启动装配晚于构造时用)。 */
+  setManagerWorkspaceResolver(resolver: ManagerWorkspaceResolver): void {
+    this.managerWorkspaceResolver = resolver
+  }
+
+  /**
+   * 0.4.0 A:会话 effective cwd 覆盖钩子(供 AgentService 消费)。
+   * manager 会话返回 resolver 当前值(迁移后旧会话立即指向新位置,丢失时抛人话错);
+   * 其他会话返回 undefined(沿用 pi meta.cwd)。
+   */
+  /** manager 会话展示路径(resolver 当前值;无 resolver=undefined 走 meta.cwd)。 */
+  private managerDisplay(): string | undefined {
+    return this.managerWorkspaceResolver?.resolveForDisplay()
+  }
+
+  async managerCwdOverride(sessionId: string): Promise<string | undefined> {
+    if (!this.managerWorkspaceResolver || !this.rolesActive || !this.roleRepository) {
+      return undefined
+    }
+    const binding = await this.roleRepository.getBinding(sessionId)
+    if (!binding || binding.roleId !== SYSTEM_MANAGER_ROLE_ID) return undefined
+    return this.managerWorkspaceResolver.resolve()
+  }
 
   /** 角色功能降级(迁移失败等):会话服务停用角色分支,回到无角色行为。 */
   deactivateRoles(): void {
@@ -78,7 +105,7 @@ export class SessionService {
     })
   }
 
-  /** 内置小柊用户会话:cwd 固定 system 私有 workspace,无 mounts。 */
+  /** 内置小柊用户会话:cwd=总管工作区当前值(resolver;无覆盖时=内置 system workspace),无 mounts。 */
   async createManagerSession(input: {
     readonly providerId: ProviderId
     readonly modelId: string
@@ -90,11 +117,18 @@ export class SessionService {
     if (!row || row.kind !== 'manager' || row.lifecycle !== 'ready' || row.archivedAt !== null) {
       throw new SessionCreateError('内置总管尚未准备好;请重启应用再试')
     }
+    let cwd: string
+    if (this.managerWorkspaceResolver) {
+      // fail-closed:覆盖路径丢失时在这里就报人话错,不静默回落 C 盘
+      cwd = await this.managerWorkspaceResolver.resolve()
+    } else {
+      cwd = systemManagerWorkspacePath(this.userDataPath)
+    }
     return this.createBoundSession({
       roleId: SYSTEM_MANAGER_ROLE_ID,
       providerId: input.providerId,
       modelId: input.modelId,
-      cwd: systemManagerWorkspacePath(this.userDataPath),
+      cwd,
       visibility: 'user',
     })
   }
@@ -156,7 +190,7 @@ export class SessionService {
       throw err
     }
     return {
-      summary: toSummary(meta, 0, { roleId: input.roleId, archivedAt: null }),
+      summary: toSummary(meta, 0, { roleId: input.roleId, archivedAt: null }, this.managerDisplay()),
       messages: [],
     }
   }
@@ -176,7 +210,7 @@ export class SessionService {
     )
     return metas
       .filter((m) => !(internalIds?.has(m.id) ?? false) && readAppMeta(m)?.internal !== true)
-      .map((m) => toSummary(m, 0, bindings.get(m.id))) // 列表阶段不开会话拿 stats,避免 writer lease 开销
+      .map((m) => toSummary(m, 0, bindings.get(m.id), this.managerDisplay())) // 列表阶段不开会话拿 stats,避免 writer lease 开销
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
@@ -190,7 +224,12 @@ export class SessionService {
       session.getStats(),
       this.bindingOf(sessionId),
     ])
-    const summary = toSummary({ ...meta, name: name ?? meta.name }, stats.messageCount, binding)
+    const summary = toSummary(
+      { ...meta, name: name ?? meta.name },
+      stats.messageCount,
+      binding,
+      this.managerDisplay(),
+    )
     // TODO(M3-04): 从 findEntriesOnBranch 恢复 ChatMessage 列表
     return { summary, messages: [] }
   }
@@ -199,7 +238,7 @@ export class SessionService {
     const session = await this.openSession(sessionId)
     await session.setName(title)
     const [meta, binding] = await Promise.all([session.getMetadata(), this.bindingOf(sessionId)])
-    return toSummary({ ...meta, name: title }, 0, binding)
+    return toSummary({ ...meta, name: title }, 0, binding, this.managerDisplay())
   }
 
   async remove(sessionId: string): Promise<void> {
@@ -223,7 +262,7 @@ export class SessionService {
     await this.roleRepository.setSessionArchived(sessionId, archived ? Date.now() : null)
     const [meta, after] = await Promise.all([this.findMeta(sessionId), this.bindingOf(sessionId)])
     if (!meta) throw new SessionNotFoundError(sessionId)
-    return toSummary(meta, 0, after)
+    return toSummary(meta, 0, after, this.managerDisplay())
   }
 
   /** 发消息前的归档拦截:已归档会话不能继续聊(前端已禁输入,这里兜底)。 */
@@ -316,13 +355,18 @@ function toSummary(
   m: SqliteSessionMetadata,
   messageCount: number,
   binding: Pick<SessionBindingRow, 'roleId' | 'archivedAt'> | undefined,
+  managerWorkspaceDisplay?: string,
 ): SessionSummary {
   const app = readAppMeta(m)
   const providerId: ProviderId = app?.providerId ?? 'kimi-coding'
   return {
     id: m.id,
     title: m.name ?? DEFAULT_TITLE,
-    workspacePath: m.cwd,
+    // 0.4.0 A:manager 会话展示路径跟随 resolver 当前值(迁移后列表立即指向新位置)
+    workspacePath:
+      binding?.roleId === SYSTEM_MANAGER_ROLE_ID && managerWorkspaceDisplay
+        ? managerWorkspaceDisplay
+        : m.cwd,
     // binding 缺失(迁移前/孤儿防御)→ null,前端归入「未分组」兜底
     roleId: binding?.roleId ?? null,
     archivedAt: binding?.archivedAt ?? null,

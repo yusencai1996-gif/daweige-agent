@@ -9,12 +9,15 @@ const MAX_JSON_CHARS = 50_000
 const MAX_SUMMARY_CHARS = 20_000
 const MAX_ITEMS = 100
 const MAX_ITEM_CHARS = 4_000
+/** A-19 数据明细:与 taskBrief 同级上限;交棒时仍受 envelope 单条 2_000 截断。 */
+const MAX_DETAIL_CHARS = 4_000
 
 interface ParsedResult {
   readonly summary: string
   readonly conclusions: readonly string[]
   readonly artifactPaths: readonly string[]
   readonly unmetCriteria: readonly string[]
+  readonly detailData?: string
 }
 
 export function parseDelegationResult(
@@ -43,10 +46,20 @@ export function parseDelegationResult(
     const value: unknown = JSON.parse(json)
     if (!isRecord(value)) return fallback(finalText, acceptanceCriteria)
     const keys = Object.keys(value).sort()
-    if (
-      keys.join(',') !==
-      ['artifactPaths', 'conclusions', 'summary', 'unmetCriteria'].sort().join(',')
-    ) {
+    const baseKeys = ['artifactPaths', 'conclusions', 'summary', 'unmetCriteria'].sort().join(',')
+    // A-19:detailData 可选——四键(旧格式/未产出明细)或五键都合法,其余键仍 fail closed
+    const detailPresent = keys.includes('detailData')
+    const expectedKeys = detailPresent
+      ? ['artifactPaths', 'conclusions', 'detailData', 'summary', 'unmetCriteria'].sort().join(',')
+      : baseKeys
+    if (keys.join(',') !== expectedKeys) {
+      return fallback(finalText, acceptanceCriteria)
+    }
+    const rawDetail: unknown = detailPresent ? value.detailData : undefined
+    const detail = typeof rawDetail === 'string' && rawDetail.length >= 1 && rawDetail.length <= MAX_DETAIL_CHARS
+      ? rawDetail
+      : undefined
+    if (detailPresent && detail === undefined) {
       return fallback(finalText, acceptanceCriteria)
     }
     if (
@@ -62,6 +75,7 @@ export function parseDelegationResult(
       conclusions: value.conclusions,
       artifactPaths: value.artifactPaths,
       unmetCriteria: value.unmetCriteria,
+      ...(detail !== undefined ? { detailData: detail } : {}),
     }
   } catch {
     return fallback(finalText, acceptanceCriteria)
@@ -101,6 +115,7 @@ export async function buildDelegationResult(input: {
     conclusions: parsed.conclusions,
     artifactPaths: acceptedArtifacts,
     unmetCriteria: parsed.unmetCriteria,
+    ...(parsed.detailData !== undefined ? { detailData: parsed.detailData } : {}),
     boundaryViolations: [
       ...input.boundaryViolations.map((violation) => ({
         path: violation.path,

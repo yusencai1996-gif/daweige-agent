@@ -2,6 +2,8 @@ import type {
   ApprovalResponse,
   ChatMessage,
   CredentialStatus,
+  ManagerWorkspaceMigrateRequest,
+  ManagerWorkspaceState,
   MemoryEntry,
   ProviderId,
   ProviderInfo,
@@ -211,8 +213,32 @@ export interface IpcRequestMap {
   'agentRun:getDetail': {
     request: {
       readonly runId: import('../domain/manager').AgentRunId
+      /** 调用方 manager 会话(ownership 双重校验;阶段复审整改,对齐 getGraph/interrupt) */
+      readonly managerSessionId: string
     }
     response: import('../domain/manager').AgentRunDetail
+  }
+  /**
+   * 协作链整图(0.4.0 D):只返回该 manager 会话拥有的 graph;
+   * 图状态完全由 DTO 推导(刷新校正用),renderer 不在本地存第二份。
+   */
+  'agentRun:getGraph': {
+    request: {
+      readonly graphId: import('../domain/manager').AgentGraphId
+      readonly managerSessionId: string
+    }
+    response: import('../domain/manager').AgentRunGraph
+  }
+  /**
+   * 受控打断(0.4.0 D):只允许当前用户可见 manager 会话拥有的非终态 run;
+   * 重复请求幂等返回最新状态;不能传 internal sessionId。
+   */
+  'agentRun:interrupt': {
+    request: {
+      readonly runId: import('../domain/manager').AgentRunId
+      readonly managerSessionId: string
+    }
+    response: import('../domain/manager').AgentRunSummary
   }
   'message:send': {
     request: {
@@ -242,6 +268,14 @@ export interface IpcRequestMap {
       readonly settings: Settings
     }
     response: Settings
+  }
+  'managerWorkspace:get': {
+    request: void
+    response: ManagerWorkspaceState
+  }
+  'managerWorkspace:migrate': {
+    request: ManagerWorkspaceMigrateRequest
+    response: ManagerWorkspaceState
   }
   'credential:status': {
     request: void

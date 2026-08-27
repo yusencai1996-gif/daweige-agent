@@ -1,5 +1,6 @@
 import type {
   AgentRunDetail,
+  AgentRunGraph,
   AgentRunSummary,
   AgentRunUsage,
 } from '../../shared/domain/manager'
@@ -43,10 +44,14 @@ export class AgentRunQueryService {
     return this.summarize(await this.roles.listAgentRuns())
   }
 
-  async getDetail(runId: string): Promise<AgentRunDetail> {
+  /** managerSessionId 必填(复审整改复验:调用方声明必须校验,不从 row 反推 owner)。 */
+  async getDetail(runId: string, managerSessionId: string): Promise<AgentRunDetail> {
     const row = await this.roles.getAgentRun(runId)
     if (!row) throw new AgentRunOwnershipError()
-    await this.assertManagerSession(row.managerSessionId)
+    // 调用方 ownership(阶段复审整改):不只确认 owner 是合法 manager,
+    // 还要求调用方声明的 manager 会话与 run 归属一致(对齐 getGraph/interrupt 边界)
+    await this.assertManagerSession(managerSessionId)
+    if (row.managerSessionId !== managerSessionId) throw new AgentRunOwnershipError()
     const [run] = await this.summarize([row])
     if (!run) throw new AgentRunOwnershipError()
     let childSession: AgentRunDetail['childSession'] = null
@@ -68,6 +73,36 @@ export class AgentRunQueryService {
     return summary
   }
 
+  /** 协作链整图(0.4.0 D):归属校验后拼 nodes+edges+aggregate(图状态完全由 DTO 推导)。 */
+  async getGraph(graphId: string, managerSessionId: string): Promise<AgentRunGraph> {
+    await this.assertManagerSession(managerSessionId)
+    const { rows, edges } = await this.roles.getAgentRunGraph(graphId)
+    if (rows.length === 0) throw new AgentRunOwnershipError()
+    // graph 上任意节点归属都应一致(建链时已校验同 manager;防手改库)
+    for (const row of rows) {
+      if (row.managerSessionId !== managerSessionId) throw new AgentRunOwnershipError()
+    }
+    const nodes = await this.summarize(rows)
+    const active = nodes.filter(
+      (n) =>
+        n.status === 'running' || n.status === 'waiting' ||
+        n.status === 'queued' || n.status === 'awaiting-approval',
+    ).length
+    return {
+      graphId,
+      managerSessionId,
+      nodes,
+      edges: edges.map((e) => ({ fromRunId: e.from, toRunId: e.to, kind: e.kind })),
+      aggregate: {
+        active,
+        completed: nodes.filter((n) => n.status === 'completed').length,
+        failed: nodes.filter((n) => n.status === 'failed' || n.status === 'rejected').length,
+        interrupted: nodes.filter((n) => n.status === 'interrupted').length,
+        totalTokens: nodes.reduce((sum, n) => sum + n.usage.totalTokens, 0),
+      },
+    }
+  }
+
   private async summarize(rows: readonly AgentRunRow[]): Promise<AgentRunSummary[]> {
     const ids = rows.flatMap((row) => row.internalSessionId ? [row.internalSessionId] : [])
     const totals = this.usage
@@ -85,6 +120,11 @@ export class AgentRunQueryService {
       parentRunId: row.parentRunId,
       status: row.status,
       waitingReason: row.waitingReason,
+      graphId: row.graphId,
+      dependsOnRunIds: row.dependsOnRunIds,
+      queueReason: row.queueReason,
+      followupCount: row.followupCount,
+      interruptSource: row.interruptSource,
       taskBrief: row.envelope.taskBrief,
       allowedWorkspacePaths: row.envelope.allowedWorkspacePaths,
       usage: row.internalSessionId ? (totals.get(row.internalSessionId) ?? ZERO_USAGE) : ZERO_USAGE,
@@ -94,6 +134,11 @@ export class AgentRunQueryService {
       updatedAt: row.updatedAt,
       ...(row.failureMessage ? { failureMessage: row.failureMessage } : {}),
     }))
+  }
+
+  /** ownership 断言公开给受控写通道(interrupt 等):managerSessionId 必须是真实可见的总管用户会话。 */
+  assertManagerSessionOwnership(sessionId: string): Promise<void> {
+    return this.assertManagerSession(sessionId)
   }
 
   private async assertManagerSession(sessionId: string): Promise<void> {

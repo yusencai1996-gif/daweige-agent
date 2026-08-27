@@ -14,11 +14,12 @@ export type ApprovalKind =
   | 'outside-read' // 读取工作文件夹外的文件
   | 'role-rules-edit' // AI 修改当前角色守则(永远逐次确认,不吃任何会话级授权)
   | 'delegation' // 总管派活确认(0.3.0;同意才派出子 agent,不吃任何会话级授权)
+  | 'command' // 命令运行确认(0.4.0;沙箱里跑,审批独立于文件授权)
 
 /** 文件/守则操作确认卡(0.1~0.2 既有形态,字段不变)。 */
 export interface FileApprovalRequest {
   readonly id: string
-  readonly kind: Exclude<ApprovalKind, 'delegation'>
+  readonly kind: Exclude<ApprovalKind, 'delegation' | 'command'>
   /** 人话标题,如"我要移动 38 个文件"。 */
   readonly title: string
   /** 人话说明:将对哪些文件做什么、影响多少项、是否可恢复。 */
@@ -59,7 +60,10 @@ export interface DelegationApprovalRequest {
   readonly createdAt: number
 }
 
-export type ApprovalRequest = FileApprovalRequest | DelegationApprovalRequest
+export type ApprovalRequest =
+  | FileApprovalRequest
+  | DelegationApprovalRequest
+  | import('./command').CommandApprovalRequest
 
 /**
  * approve:本次放行

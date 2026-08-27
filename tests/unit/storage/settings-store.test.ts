@@ -53,6 +53,56 @@ describe('SettingsStore', () => {
     expect(await new SettingsStore(path).load()).toEqual(DEFAULT_SETTINGS)
   })
 
+  it('A-23 enabledModels 多选池合法保存/读取;旧文件缺省字段兼容', async () => {
+    const path = join(dir, 'settings.json')
+    const store = new SettingsStore(path)
+    const saved = await store.save({
+      providerSelection: { providerId: 'zai', modelId: 'glm-5.3' },
+      enabledModels: [
+        { providerId: 'zai', modelId: 'glm-5.3' },
+        { providerId: 'zai', modelId: 'glm-5.3-flash' },
+        { providerId: 'deepseek', modelId: 'deepseek-v4-flash' },
+      ],
+    })
+    expect(saved.enabledModels).toHaveLength(3)
+    const loaded = await new SettingsStore(path).load()
+    expect(loaded.enabledModels).toEqual(saved.enabledModels)
+    // 旧文件(无 enabledModels)仍正常加载,字段为 undefined
+    const legacyPath = join(dir, 'legacy.json')
+    await fs.writeFile(
+      legacyPath,
+      JSON.stringify({ providerSelection: { providerId: 'zai', modelId: 'glm-5.3' } }),
+      'utf-8',
+    )
+    expect((await new SettingsStore(legacyPath).load()).enabledModels).toBeUndefined()
+  })
+
+  it('A-23 enabledModels 超 32 项拒绝保存(schema 上限)', async () => {
+    const path = join(dir, 'settings.json')
+    const store = new SettingsStore(path)
+    const tooMany = Array.from({ length: 33 }, () => ({
+      providerId: 'zai' as const,
+      modelId: 'glm-5.3',
+    }))
+    await expect(
+      store.save({ providerSelection: { providerId: 'zai', modelId: 'glm-5.3' }, enabledModels: tooMany }),
+    ).rejects.toThrow('设置数据不合法')
+  })
+
+  it('A-23 整改:enabledModels 重复项拒绝保存(uniqueItems,渲染进程不可信的防御)', async () => {
+    const path = join(dir, 'settings.json')
+    const store = new SettingsStore(path)
+    await expect(
+      store.save({
+        providerSelection: { providerId: 'zai', modelId: 'glm-5.3' },
+        enabledModels: [
+          { providerId: 'zai', modelId: 'glm-5.3' },
+          { providerId: 'zai', modelId: 'glm-5.3' },
+        ],
+      }),
+    ).rejects.toThrow('设置数据不合法')
+  })
+
   it('设置文件里不存在任何 key 形态字段(扫描验证)', async () => {
     const path = join(dir, 'settings.json')
     const store = new SettingsStore(path)

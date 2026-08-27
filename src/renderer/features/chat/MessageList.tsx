@@ -2,6 +2,8 @@ import { useLayoutEffect, useMemo, useRef } from 'react'
 import { MarkdownMessage } from '../../components/MarkdownMessage'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolStatus } from './ToolStatus'
+import { CommandBlock } from './CommandBlock'
+import type { CommandLiveChunks } from './command-live'
 import { DelegationCard, type DelegationCardActions } from '../manager/DelegationCard'
 import {
   GuardrailsDraftCard,
@@ -28,10 +30,12 @@ interface MessageListProps {
    * 没给(internal 只读详情页)时草稿块原样按 markdown 代码块显示。
    */
   readonly draftActions?: GuardrailsDraftCardActions
+  /** 命令实时输出(0.4.0 C):按 toolCallId 索引;运行中的 run_command 也走 CommandBlock。 */
+  readonly commandLive?: ReadonlyMap<string, CommandLiveChunks>
 }
 
 /** 消息流;用户没往上翻时自动滚到底。确认卡片已挪到输入区上方浮层(ChatView)。 */
-export function MessageList({ items, roleName, streamingMessageId, onRetry, delegation, draftActions }: MessageListProps) {
+export function MessageList({ items, roleName, streamingMessageId, onRetry, delegation, draftActions, commandLive }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const pinnedToBottomRef = useRef(true)
 
@@ -124,9 +128,18 @@ export function MessageList({ items, roleName, streamingMessageId, onRetry, dele
                 ))}
               {hasTools && (
                 <div className="tool-status-list">
-                  {(message.toolExecutions ?? []).map((execution) => (
-                    <ToolStatus key={execution.toolCallId} execution={execution} />
-                  ))}
+                  {(message.toolExecutions ?? []).map((execution) =>
+                    execution.toolName === 'run_command' &&
+                    (execution.command !== undefined || commandLive?.has(execution.toolCallId)) ? (
+                      <CommandBlock
+                        key={execution.toolCallId}
+                        execution={execution}
+                        live={commandLive?.get(execution.toolCallId)}
+                      />
+                    ) : (
+                      <ToolStatus key={execution.toolCallId} execution={execution} />
+                    ),
+                  )}
                 </div>
               )}
             </div>

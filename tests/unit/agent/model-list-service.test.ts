@@ -67,4 +67,30 @@ describe('listProviderModels(A-10)', () => {
     expect(result.notice).toContain('空的')
     vi.unstubAllGlobals()
   })
+
+  it('A-20 服务端重复条目去重:glm-5.3-flash 出现两次只显示一次,且规格表内有 contextWindow', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'glm-5.3-flash' }, { id: 'glm-5.3-flash' }, { id: 'glm-5.3' }] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await listProviderModels('zai', storeWith('sk-test'))
+    const flashCount = result.models.filter((m) => m.id === 'glm-5.3-flash').length
+    expect(flashCount).toBe(1)
+    expect(result.models).toHaveLength(2)
+    expect(result.models.find((m) => m.id === 'glm-5.3-flash')).toEqual({ id: 'glm-5.3-flash', contextWindow: 1_000_000, source: 'online' })
+    vi.unstubAllGlobals()
+  })
+
+  it('A-20 规格表扩充:pi 静态表模型在线拉取时都带 contextWindow', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'glm-5.2' }, { id: 'glm-5-turbo' }, { id: 'glm-4.7' }] }),
+    }))
+    const result = await listProviderModels('zai-coding-cn', storeWith('sk-test'))
+    expect(result.models.find((m) => m.id === 'glm-5.2')?.contextWindow).toBe(1_000_000)
+    expect(result.models.find((m) => m.id === 'glm-5-turbo')?.contextWindow).toBe(200_000)
+    expect(result.models.find((m) => m.id === 'glm-4.7')?.contextWindow).toBe(204_800)
+    vi.unstubAllGlobals()
+  })
 })

@@ -93,6 +93,28 @@ export type AgentPushEvent =
       readonly managerSessionId: string
       readonly run: import('../domain/manager').AgentRunSummary
     }
+  | {
+      /** 命令实时输出(0.4.0 C);renderer 按 (sessionId,toolCallId,stream,sequence) 去重排序。 */
+      readonly type: 'command_output'
+      readonly sessionId: string
+      readonly toolCallId: string
+      readonly stream: import('../domain/command').CommandOutputStream
+      readonly sequence: number
+      /** UTF-8 文本,单 chunk ≤16 KiB。 */
+      readonly chunk: string
+      /** 截断标记(流被 cap 时最后一段带)。 */
+      readonly truncated?: boolean
+      /** 展示位置(同 approval surface 语义;child 命令卡显示在 manager 会话)。 */
+      readonly surfaceSessionId?: string
+    }
+  | {
+      /** 命令结束(0.4.0 C):结果摘要不含 stdout/stderr(完整结果在 pi 会话,刷新可重建)。 */
+      readonly type: 'command_finished'
+      readonly sessionId: string
+      readonly toolCallId: string
+      readonly result: Omit<import('../domain/command').CommandResultDetails, 'stdout' | 'stderr'>
+      readonly surfaceSessionId?: string
+    }
 
 export type AgentEventType = AgentPushEvent['type']
 

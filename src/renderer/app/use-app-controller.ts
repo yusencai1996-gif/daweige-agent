@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AgentRunDetail,
+  AgentRunGraph,
   AgentRunSummary,
   ApprovalDecision,
   DelegationApprovalRequest,
   FileApprovalRequest,
+  CommandApprovalRequest,
   ChatMessage,
   CredentialStatus,
   ProviderId,
@@ -21,12 +23,17 @@ import type {
 } from '../../shared/domain'
 import type { BootstrapState, ConnectivityResult, RequestOf } from '../../shared/ipc/contracts'
 import type { UpdateState } from '../../shared/domain/update'
+import type { CommandResultDetails } from '../../shared/domain/command'
+import { joinChunks, type CommandLiveChunks } from '../features/chat/command-live'
 import { isIpcErrorPayload, type IpcErrorCode } from '../../shared/ipc/errors'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 import type { DaweigeBridge } from '../../shared/ipc/bridge'
 import { SYSTEM_MANAGER_ROLE_ID } from '../../shared/domain/manager'
 import { resolveActiveRoleName } from './active-role-name'
 import { withProviderSelection } from '../features/settings/model-options'
+import {
+  toggleEnabledModel as toggleEnabledModelInSettings,
+} from '../features/settings/model-options'
 import type { DelegationCardActions } from '../features/manager/DelegationCard'
 
 /** 确认卡片阶段:pending(等用户)→ running(执行中…)→ succeeded/rejected/failed。 */
@@ -37,8 +44,8 @@ export interface ApprovalCardState {
   readonly sessionId: string
   /** 展示会话(0.3.0,PLAN §10.4):child 的文件卡 sessionId=internal,surfaceSessionId=manager 用户会话;普通会话与 sessionId 相同。 */
   readonly surfaceSessionId: string
-  /** 文件/守则卡;delegation(0.3.0)不入此列表(由派活卡渲染)。 */
-  readonly request: FileApprovalRequest
+  /** 文件/守则卡;command(0.4.0 C)卡最小过渡先共用此浮层,C4 换专用渲染;delegation(0.3.0)不入此列表(由派活卡渲染)。 */
+  readonly request: FileApprovalRequest | CommandApprovalRequest
   readonly phase: ApprovalPhase
   /** 已发过 approval:respond(重复点击只发送一次的守卫)。 */
   readonly responded: boolean
@@ -154,6 +161,8 @@ export interface AppController {
   readonly lastFailedText: string | null
   // 确认卡片
   readonly approvals: readonly ApprovalCardState[]
+  /** 命令实时输出(0.4.0 C):按 toolCallId 索引,CommandBlock 运行中数据源;终值并入 toolExecution.command 后清除。 */
+  readonly commandLive: ReadonlyMap<string, CommandLiveChunks>
   readonly respondApproval: (
     card: ApprovalCardState,
     decision: ApprovalDecision,
@@ -166,17 +175,25 @@ export interface AppController {
   /**
    * internal 只读详情整页(批 2b,PLAN §10.3):非 null 即 ViewMode='agent-run-detail'。
    * run 优先取列表里的活体(状态实时),列表里找不到(角色被删等)退回打开时的快照。
+   * 协作链(0.4.0 D):graph 是当前 run 所属链的整图懒加载缓存,仅同 graph 已知 run 数
+   * >1 时才取/才有值;单节点链(含 0.3 旧数据)恒为 undefined,页面保持 0.3 形态。
    */
   readonly runDetailView: {
     readonly run: AgentRunSummary
     readonly detail: AgentRunDetail | undefined
     readonly loading: boolean
+    readonly graph: AgentRunGraph | undefined
+    readonly graphLoading: boolean
   } | null
   readonly openAgentRunDetail: (runId: string) => void
   readonly closeAgentRunDetail: () => void
+  /** 受控打断(0.4.0 D):确认文案由 UI 层把守;这里发 agentRun:interrupt 并本地校正状态。 */
+  readonly interruptRun: (runId: string) => Promise<void>
   // 设置与凭据
   readonly settings: Settings | null
   readonly selectProvider: (selection: ProviderSelection) => Promise<void>
+  /** 启用池勾选(设置页):勾上=入池/取消=出池,整体走 settings:update;池满静默不写。 */
+  readonly toggleEnabledModel: (item: ProviderSelection) => Promise<void>
   readonly updateThinkingLevel: (level: ThinkingLevel) => Promise<void>
   readonly credentials: readonly CredentialStatus[]
   readonly saveCredential: (providerId: ProviderId, apiKey: string) => Promise<boolean>
@@ -264,6 +281,47 @@ function updateToolExecution(
   })
 }
 
+/** command_finished 合成终值:live 流拼接的 stdout/stderr + 事件摘要 → 完整 CommandResultDetails,挂进对应工具行。 */
+export function attachCommandDetails(
+  messages: readonly ChatMessage[],
+  toolCallId: string,
+  details: CommandResultDetails,
+): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role !== 'assistant' || !m.toolExecutions) return m
+    if (!m.toolExecutions.some((t) => t.toolCallId === toolCallId)) return m
+    return {
+      ...m,
+      toolExecutions: m.toolExecutions.map((t) =>
+        t.toolCallId === toolCallId ? { ...t, command: details } : t,
+      ),
+    }
+  })
+}
+
+/** live chunks 按 sequence 排序拼接(乱序/重复到达安全;命令实时输出纯函数,re-export 供测试)。 */
+export { joinChunks }
+
+/** 每流滚动上限(PLAN §5.7):超过 256 KiB 丢最旧 chunk,并标 truncated。 */
+const COMMAND_LIVE_STREAM_CAP = 256 * 1024
+
+export function capChunks(chunks: Map<number, string>): { chunks: Map<number, string>; dropped: boolean } {
+  let total = 0
+  for (const text of chunks.values()) total += text.length
+  if (total <= COMMAND_LIVE_STREAM_CAP) return { chunks, dropped: false }
+  const sorted = [...chunks.entries()].sort((a, b) => a[0] - b[0])
+  const kept = new Map<number, string>()
+  let keptTotal = 0
+  // 从最新往回收,保尾部(命令输出通常结论在最后)
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const [seq, text] = sorted[i] as [number, string]
+    if (keptTotal + text.length > COMMAND_LIVE_STREAM_CAP && kept.size > 0) break
+    kept.set(seq, text)
+    keptTotal += text.length
+  }
+  return { chunks: kept, dropped: true }
+}
+
 export function useAppController(bridge: DaweigeBridge): AppController {
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null)
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
@@ -303,6 +361,38 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   /** 全部确认卡(按会话归属);展示时按当前会话过滤,切走再切回不丢。 */
   const [allApprovals, setAllApprovals] = useState<readonly ApprovalCardState[]>([])
 
+  /** 命令实时输出(0.4.0 C;复审整改:内部键=sessionId#toolCallId 复合,防跨会话撞键混流;
+   * 终值合成后清除;刷新恢复走 mapper 的 details)。 */
+  const [commandLiveInternal, setCommandLiveInternal] = useState<
+    ReadonlyMap<string, CommandLiveChunks>
+  >(new Map())
+  const commandLiveRef = useRef<ReadonlyMap<string, CommandLiveChunks>>(new Map())
+  const liveKey = (sessionId: string, toolCallId: string): string => `${sessionId}#${toolCallId}`
+  const updateCommandLive = useCallback(
+    (
+      key: string,
+      mutate: (prev: CommandLiveChunks | undefined) => CommandLiveChunks | null,
+    ) => {
+      const next = new Map(commandLiveRef.current)
+      const result = mutate(next.get(key))
+      if (result === null) next.delete(key)
+      else next.set(key, result)
+      commandLiveRef.current = next
+      setCommandLiveInternal(next)
+    },
+    [],
+  )
+  /** 当前会话可见的实时输出(复合键剥前缀;child internal 的实时流在详情页数据源,不在消息流)。 */
+  const commandLive = useMemo(() => {
+    const prefix = activeSessionId ? `${activeSessionId}#` : null
+    if (!prefix) return new Map<string, CommandLiveChunks>()
+    const view = new Map<string, CommandLiveChunks>()
+    for (const [key, value] of commandLiveInternal) {
+      if (key.startsWith(prefix)) view.set(key.slice(prefix.length), value)
+    }
+    return view
+  }, [commandLiveInternal, activeSessionId])
+
   /* ---- 派活卡(0.3.0) ---- */
   /** 当前打开的 manager 用户会话名下的 run;切到普通会话即清空(只在 manager 会话打开时拉)。 */
   const [agentRuns, setAgentRuns] = useState<readonly AgentRunSummary[]>([])
@@ -313,6 +403,17 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   /** 已取回的派活详情(结论摘要/展开细节/完整过程共用一份缓存)。 */
   const [runDetails, setRunDetails] = useState<ReadonlyMap<string, AgentRunDetail>>(new Map())
   const [runDetailLoading, setRunDetailLoading] = useState<ReadonlySet<string>>(new Set())
+  /** 协作链整图(0.4.0 D)按 graphId 缓存;图状态由 DTO 推导,本地只当视图缓存不存第二份真相。 */
+  const [agentGraphs, setAgentGraphs] = useState<ReadonlyMap<string, AgentRunGraph>>(new Map())
+  const [graphLoadingIds, setGraphLoadingIds] = useState<ReadonlySet<string>>(new Set())
+  /** 打断在途(0.4.0 D):防重复点击;终态返回后自动解锁。 */
+  const [interruptBusy, setInterruptBusy] = useState<ReadonlySet<string>>(new Set())
+  /** 图缓存镜像(事件回调里判断「是否已拉过」用,不读旧闭包)。 */
+  const agentGraphsRef = useRef<ReadonlyMap<string, AgentRunGraph>>(new Map())
+  agentGraphsRef.current = agentGraphs
+  /** 打断在途镜像(interruptRun 的重入守卫读 ref,state 只喂 UI 禁用态)。 */
+  const interruptBusyRef = useRef<ReadonlySet<string>>(new Set())
+  interruptBusyRef.current = interruptBusy
 
   const [settings, setSettings] = useState<Settings | null>(null)
   const [credentials, setCredentials] = useState<readonly CredentialStatus[]>([])
@@ -329,6 +430,16 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   const noticeTimerRef = useRef<number | null>(null)
   const settingsRef = useRef<Settings | null>(null)
   settingsRef.current = settings
+  /**
+   * settings 写入串行链(复审整改):settings:update 是整份快照写回,
+   * 并发写会互相覆盖(快速连续勾选丢勾、旧响应回滚新状态)。
+   * 所有变更排队执行;链内维护权威最新值——setSettings 后 re-render 是异步的,
+   * 链内下一步不能读 settingsRef(它还是旧值),只能读链尾值。
+   */
+  const settingsChain = useRef<{ promise: Promise<void>; latest: Settings | null }>({
+    promise: Promise.resolve(),
+    latest: null,
+  })
   const sessionsRef = useRef<readonly SessionSummary[]>([])
   sessionsRef.current = sessions
   /** agentRuns 属于哪条 manager 会话(事件 upsert 按它过滤);非 manager 会话为 null。 */
@@ -343,6 +454,22 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   /** agentRuns 最新值(整页详情打开入口要按 runId 找活体,事件回调外用 ref 穿透)。 */
   const agentRunsRef = useRef<readonly AgentRunSummary[]>([])
   agentRunsRef.current = agentRuns
+  /** 图在途/失效标(0.4.0 D):并发去重 + agent_run_updated 后的重拉触发,形态对齐 runDetail 的 loading/dirty。 */
+  const graphLoadingRef = useRef<ReadonlySet<string>>(new Set())
+  const graphsDirtyRef = useRef<ReadonlySet<string>>(new Set())
+  /** 图代次(复审整改):标脏时 +1;在途请求的响应只有代次未变才有资格清脏标——
+   * 防旧响应把标脏误清、尾随重拉被吞(族谱不再卡旧快照)。 */
+  const graphEpochRef = useRef<ReadonlyMap<string, number>>(new Map())
+
+  const markGraphDirty = useCallback((graphId: string) => {
+    const nextDirty = new Set(graphsDirtyRef.current)
+    nextDirty.add(graphId)
+    graphsDirtyRef.current = nextDirty
+    graphEpochRef.current = new Map(graphEpochRef.current).set(
+      graphId,
+      (graphEpochRef.current.get(graphId) ?? 0) + 1,
+    )
+  }, [])
 
   /* ---- 守则草稿预填(批 2b,PLAN §10.5) ---- */
   /** 「用这个草稿建角色」带进向导的预填;普通「新建角色」为 null。 */
@@ -378,6 +505,37 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current)
     noticeTimerRef.current = window.setTimeout(() => setNotice(null), 3200)
   }, [])
+
+  /**
+   * settings 变更统一入口(串行链,见 settingsChain 注释):
+   * mutate 基于链内最新值计算下一份快照,返回原引用表示无事可做;
+   * 先本地生效、IPC 成功采用服务端返回、失败回滚到链内最新值。
+   * silent=true 失败不弹提示(尽力而为型写入,如记住上次会话)。
+   */
+  const enqueueSettingsMutation = useCallback(
+    (mutate: (current: Settings) => Settings, opts?: { silent?: boolean }): Promise<void> => {
+      const prev = settingsChain.current
+      const run = prev.promise.then(async () => {
+        const current = settingsChain.current.latest ?? settingsRef.current
+        if (!current) return
+        const next = mutate(current)
+        if (next === current) return
+        setSettings(next)
+        try {
+          const saved = await bridge.invoke('settings:update', { settings: next })
+          settingsChain.current.latest = saved
+          setSettings(saved)
+        } catch (error) {
+          settingsChain.current.latest = current
+          setSettings(current)
+          if (!opts?.silent) showNotice(humanizeError(error))
+        }
+      })
+      settingsChain.current = { promise: run, latest: prev.latest }
+      return run
+    },
+    [bridge, showNotice],
+  )
 
   const applyDetail = useCallback(
     (detail: SessionDetail) => {
@@ -426,20 +584,18 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         const detail = await bridge.invoke('session:open', { sessionId })
         applyDetail(detail)
         setView('chat') // 点会话切回聊天(从使用统计/设置页回来时)
-        // 记住上次活跃会话(尽力而为,不阻断打开)。
-        const current = settingsRef.current
-        if (current) {
-          const next: Settings = { ...current, lastActiveSessionId: sessionId }
-          setSettings(next)
-          bridge.invoke('settings:update', { settings: next }).catch(() => undefined)
-        }
+        // 记住上次活跃会话(尽力而为:串行链上静默写入,不与设置页勾选等并发写互相覆盖)。
+        void enqueueSettingsMutation(
+          (current) => ({ ...current, lastActiveSessionId: sessionId }),
+          { silent: true },
+        )
       } catch (error) {
         setChatError(humanizeError(error))
       } finally {
         setDetailLoading(false)
       }
     },
-    [bridge, applyDetail],
+    [bridge, applyDetail, enqueueSettingsMutation],
   )
 
   const bootstrapOnce = useCallback(async () => {
@@ -517,7 +673,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         }
       }
       bridge
-        .invoke('agentRun:getDetail', { runId })
+        .invoke('agentRun:getDetail', { runId, managerSessionId: agentRunsSessionRef.current ?? '' })
         .then((detail) => {
           setRunDetails((prev) => new Map(prev).set(runId, detail))
         })
@@ -527,6 +683,80 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         .finally(settleLoading)
     },
     [bridge],
+  )
+
+  /**
+   * 协作链整图懒加载(0.4.0 D):打开详情时才按需取,graphId 键缓存;
+   * agent_run_updated 触到已缓存链 → 标脏重拉(刷新时以主进程 DTO 为准)。
+   * 并发去重与尾随重拉同 loadRunDetail 一套形态。
+   */
+  const loadAgentGraph = useCallback(
+    (graphId: string) => {
+      // 已缓存且没标脏:命中缓存不重拉(重拉只发生在推送变脏或首次打开)
+      if (
+        agentGraphsRef.current.has(graphId) &&
+        !graphsDirtyRef.current.has(graphId)
+      ) {
+        return
+      }
+      if (graphLoadingRef.current.has(graphId)) {
+        const nextDirty = new Set(graphsDirtyRef.current)
+        nextDirty.add(graphId)
+        graphsDirtyRef.current = nextDirty
+        return
+      }
+      const nextLoading = new Set(graphLoadingRef.current)
+      nextLoading.add(graphId)
+      graphLoadingRef.current = nextLoading
+      setGraphLoadingIds(nextLoading)
+      // 请求发出时的代次:响应回来若代次已涨(在途期间有事件标脏),无权清脏标——
+      // 由 settle 的尾随重拉保证族谱刷到新状态(复审整改)
+      const requestEpoch = graphEpochRef.current.get(graphId) ?? 0
+      const settle = () => {
+        const rest = new Set(graphLoadingRef.current)
+        rest.delete(graphId)
+        graphLoadingRef.current = rest
+        setGraphLoadingIds(rest)
+        // 在途期间链上又有状态变化:尾随再拉一次,族谱不落在旧快照上
+        if (graphsDirtyRef.current.has(graphId)) {
+          const nextDirty = new Set(graphsDirtyRef.current)
+          nextDirty.delete(graphId)
+          graphsDirtyRef.current = nextDirty
+          loadAgentGraph(graphId)
+        }
+      }
+      const managerSessionId = agentRunsSessionRef.current
+      if (managerSessionId === null) {
+        // 不在 manager 会话(理论到不了:run 列表只在 manager 会话加载),直接放弃避免空归属请求
+        settle()
+        return
+      }
+      bridge
+        .invoke('agentRun:getGraph', { graphId, managerSessionId })
+        .then((graph) => {
+          setAgentGraphs((prev) => new Map(prev).set(graph.graphId, graph))
+          // 代次未变才清脏标:旧响应不得吞掉在途事件触发的刷新
+          if ((graphEpochRef.current.get(graphId) ?? 0) === requestEpoch) {
+            graphsDirtyRef.current = new Set(
+              [...graphsDirtyRef.current].filter((id) => id !== graphId),
+            )
+          }
+        })
+        .catch(() => {
+          // 图谱取不到不打断详情页主体:区块保持隐藏/弱提示,下次打开或推送再试
+        })
+        .finally(settle)
+    },
+    [bridge],
+  )
+
+  /** 同 graph 已知 run 数 >1 才值得画链;单节点图(含 0.3 旧数据)走 0.3 形态。 */
+  const ensureGraphForRun = useCallback(
+    (run: AgentRunSummary) => {
+      const peerCount = agentRunsRef.current.filter((r) => r.graphId === run.graphId).length
+      if (peerCount > 1) loadAgentGraph(run.graphId)
+    },
+    [loadAgentGraph],
   )
 
   /* ============ agent 事件流 ============ */
@@ -600,6 +830,10 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         // 详情整页正开着这条 run(running/waiting 实时刷新,批 2b PLAN §10.3):
         // 重拉 getDetail 恢复完整历史;loadRunDetail 自带加载中去重
         if (runDetailOpenRef.current?.runId === run.runId) loadRunDetail(run.runId)
+        // 协作链(0.4.0 D):链上任何节点的状态变化都让图变脏;
+        // 已缓存就重拉(族谱跟着活),没缓存只记脏标——等下次打开详情时按需取
+        markGraphDirty(run.graphId)
+        if (agentGraphsRef.current.has(run.graphId)) loadAgentGraph(run.graphId)
         return
       }
       // 严重-2(0.3.0 整改):详情整页打开期间,child internal 会话的干活事件
@@ -637,6 +871,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
             )
             break
           }
+          // command(0.4.0 C)卡先并入通用浮层最小过渡(C4 前端批再换 CommandApprovalCard 专用渲染)
           const request = event.request
           setAllApprovals((prev) => [
             ...prev,
@@ -675,16 +910,27 @@ export function useAppController(bridge: DaweigeBridge): AppController {
           })
           break
         case 'tool_start':
-          // 非当前会话时消息里没有对应条目,map 无命中,天然无害
+          // 消息流只认当前会话:跨会话的 messageId/toolCallId 不得误挂到本会话消息上(复审整改)
+          if (!isCurrentSession) break
           setMessages((prev) => appendToolExecution(prev, event.messageId, event.execution))
           break
         case 'tool_end':
-          setMessages((prev) =>
-            updateToolExecution(prev, event.toolCallId, event.status, event.error),
-          )
+          // 工具行只动当前会话的;确认卡按 (sessionId, toolCallId) 双条件翻态——
+          // 跨会话同名 toolCallId 不得把别人的行/卡错误翻成终态(复审整改)
+          if (isCurrentSession) {
+            setMessages((prev) =>
+              updateToolExecution(prev, event.toolCallId, event.status, event.error),
+            )
+          }
+          // 工具终态(命令失败/被拒/中止):onFinished 缺席路径的 live 兜底清理,防残留转圈
+          if (event.status === 'failed' || event.status === 'rejected') {
+            updateCommandLive(liveKey(event.sessionId, event.toolCallId), () => null)
+          }
           setAllApprovals((prev) =>
             prev.map((card) =>
-              card.request.toolCallId === event.toolCallId && card.phase === 'running'
+              card.request.toolCallId === event.toolCallId &&
+              card.sessionId === event.sessionId &&
+              card.phase === 'running'
                 ? {
                     ...card,
                     phase: event.status,
@@ -694,6 +940,50 @@ export function useAppController(bridge: DaweigeBridge): AppController {
             ),
           )
           break
+        case 'command_output': {
+          // 异源拒收(复审整改):只收当前打开会话与当前 manager 名下 child internal 的流;
+          // 无关会话的输出(即使 toolCallId 碰撞)不进全局 commandLive 状态
+          const owned =
+            event.sessionId === activeSessionIdRef.current ||
+            agentRunsRef.current.some((run) => run.internalSessionId === event.sessionId)
+          if (!owned) break
+          // 会话隔离:复合键 sessionId#toolCallId,跨会话同 toolCallId 不混流(复审整改)
+          const { stream, sequence, chunk } = event
+          const ownerSessionId = event.sessionId
+          updateCommandLive(liveKey(event.sessionId, event.toolCallId), (prev) => {
+            // 同键但归属漂移(理论不到):以首归属为准,拒收异源
+            if (prev !== undefined && prev.sessionId !== ownerSessionId) return prev
+            const chunks = new Map(prev?.[stream] ?? new Map<number, string>())
+            chunks.set(sequence, chunk)
+            const { chunks: capped, dropped } = capChunks(chunks)
+            return {
+              sessionId: ownerSessionId,
+              stdout: stream === 'stdout' ? capped : (prev?.stdout ?? new Map<number, string>()),
+              stderr: stream === 'stderr' ? capped : (prev?.stderr ?? new Map<number, string>()),
+              stdoutTruncated: (prev?.stdoutTruncated ?? false) || (stream === 'stdout' && dropped),
+              stderrTruncated: (prev?.stderrTruncated ?? false) || (stream === 'stderr' && dropped),
+            }
+          })
+          break
+        }
+        case 'command_finished': {
+          // 终值只挂"当前打开会话自己"的命令(child 的终值走详情页数据源,不进 manager 消息流;
+          // 防跨会话同 toolCallId 时把别人的终值挂到本会话消息上)
+          if (event.sessionId !== activeSessionIdRef.current) break
+          // 终值:live 流拼接 stdout/stderr + 事件摘要 → 合成完整 details 挂进工具行,清 live。
+          // renderer 侧 256KiB 滚动截断(保尾部)按流并入截断标记,完成态不静默丢输出
+          const live = commandLiveRef.current.get(liveKey(event.sessionId, event.toolCallId))
+          const details: CommandResultDetails = {
+            ...event.result,
+            stdout: live ? joinChunks(live.stdout) : '',
+            stderr: live ? joinChunks(live.stderr) : '',
+            stdoutTruncated: (event.result.stdoutTruncated ?? false) || (live?.stdoutTruncated ?? false),
+            stderrTruncated: (event.result.stderrTruncated ?? false) || (live?.stderrTruncated ?? false),
+          }
+          setMessages((prev) => attachCommandDetails(prev, event.toolCallId, details))
+          updateCommandLive(liveKey(event.sessionId, event.toolCallId), () => null)
+          break
+        }
         default: {
           if (!isCurrentSession) return
           handleChatEvent(event)
@@ -712,7 +1002,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         usageSyncTimerRef.current = null
       }
     }
-  }, [bridge, loadRunDetail, scheduleRunDetailSync, scheduleUsageSync])
+  }, [bridge, loadRunDetail, loadAgentGraph, markGraphDirty, scheduleRunDetailSync, scheduleUsageSync])
 
   /** 当前会话的消息流事件(message 系列、agent_error、agent_end)。 */
   const handleChatEvent = (event: AgentPushEvent): void => {
@@ -778,11 +1068,21 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         ])
         setLastFailedText(lastUserTextRef.current)
         break
-      case 'agent_end':
+      case 'agent_end': {
         setStreaming(false)
         streamingMessageIdRef.current = null
         setStreamingMessageId(null)
+        // 回合结束(正常/abort):该会话挂着 live 的命令不会再有增量,按归属精准回收
+        const endedPrefix = `${event.sessionId}#`
+        const remaining = new Map(
+          [...commandLiveRef.current.entries()].filter(([key]) => !key.startsWith(endedPrefix)),
+        )
+        if (remaining.size !== commandLiveRef.current.size) {
+          commandLiveRef.current = remaining
+          setCommandLiveInternal(remaining)
+        }
         break
+      }
       default:
         break
     }
@@ -1240,8 +1540,54 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   )
 
   /**
+   * 受控打断(0.4.0 D):非终态才发;成功后本地原位翻状态(等 agent_run_updated 校正
+ * 也以本地这版打底),失败错误码已是中文人话,直接 notice 出示。
+   */
+  const interruptRun = useCallback(
+    async (runId: string) => {
+      const managerSessionId = agentRunsSessionRef.current
+      const run = agentRunsRef.current.find((r) => r.runId === runId)
+      if (managerSessionId === null || run === undefined) return
+      if (
+        run.status === 'completed' ||
+        run.status === 'failed' ||
+        run.status === 'rejected' ||
+        run.status === 'interrupted' ||
+        interruptBusyRef.current.has(runId)
+      ) {
+        return
+      }
+      const nextBusy = new Set(interruptBusyRef.current)
+      nextBusy.add(runId)
+      interruptBusyRef.current = nextBusy
+      setInterruptBusy(nextBusy)
+      try {
+        const updated = await bridge.invoke('agentRun:interrupt', { runId, managerSessionId })
+        if (updated.managerSessionId !== agentRunsSessionRef.current) return
+        setAgentRuns((prev) => {
+          const index = prev.findIndex((r) => r.runId === updated.runId)
+          if (index < 0) return prev // 列表已换会话/条目刚被清:不塞回孤儿
+          const next = [...prev]
+          next[index] = updated
+          return next
+        })
+        showNotice('打断成功:干完的部分都留着。')
+      } catch (error) {
+        showNotice(`没能打断:${humanizeError(error)}`)
+      } finally {
+        const rest = new Set(interruptBusyRef.current)
+        rest.delete(runId)
+        interruptBusyRef.current = rest
+        setInterruptBusy(rest)
+      }
+    },
+    [bridge, showNotice],
+  )
+
+  /**
    * 「查看完整过程」(批 2b,PLAN §10.3):打开 internal 只读详情整页。
    * run 找不到(列表已换会话等)就不开,避免悬空页;打开即拉详情(去重由 loadRunDetail 管)。
+   * 协作链(0.4.0 D):同 graph 已知 run 数 >1 时顺带懒加载整图(缓存按 graphId)。
    */
   const openAgentRunDetail = useCallback(
     (runId: string) => {
@@ -1249,9 +1595,10 @@ export function useAppController(bridge: DaweigeBridge): AppController {
       if (run === undefined) return
       setRunDetailOpen({ runId, snapshot: run })
       loadRunDetail(runId)
+      ensureGraphForRun(run)
       setView('agent-run-detail')
     },
-    [loadRunDetail],
+    [loadRunDetail, ensureGraphForRun],
   )
 
   const closeAgentRunDetail = useCallback(() => {
@@ -1268,44 +1615,52 @@ export function useAppController(bridge: DaweigeBridge): AppController {
       onLoadDetail: loadRunDetail,
       onOpenFullDetail: openAgentRunDetail,
       onRespond: respondDelegation,
+      // 协作链(0.4.0 D):卡头链摘要/浮层的数据源(本地 agentRuns 派生,不发 IPC)
+      chainPeersFor: (graphId) =>
+        [...agentRuns]
+          .filter((r) => r.graphId === graphId)
+          .sort((a, b) => a.createdAt - b.createdAt),
+      interruptBusyFor: (runId) => interruptBusy.has(runId),
+      onInterrupt: (runId) => {
+        void interruptRun(runId)
+      },
     }),
-    [delegationRequests, runDetails, runDetailLoading, loadRunDetail, openAgentRunDetail, respondDelegation],
+    [
+      delegationRequests,
+      runDetails,
+      runDetailLoading,
+      loadRunDetail,
+      openAgentRunDetail,
+      respondDelegation,
+      agentRuns,
+      interruptBusy,
+      interruptRun,
+    ],
   )
 
   /* ============ 设置与凭据 ============ */
+
   const selectProvider = useCallback(
-    async (selection: ProviderSelection) => {
-      const current = settingsRef.current
-      if (!current) return
-      const next = withProviderSelection(current, selection)
-      setSettings(next) // 先本地生效,保存失败再回滚
-      try {
-        const saved = await bridge.invoke('settings:update', { settings: next })
-        setSettings(saved)
-      } catch (error) {
-        setSettings(current)
-        showNotice(humanizeError(error))
-      }
-    },
-    [bridge, showNotice],
+    (selection: ProviderSelection) =>
+      enqueueSettingsMutation((current) => withProviderSelection(current, selection)),
+    [enqueueSettingsMutation],
   )
 
   /** 思考强度:把现有 settings 原样加上 thinkingLevel 整体保存,下一条消息生效。 */
   const updateThinkingLevel = useCallback(
-    async (level: ThinkingLevel) => {
-      const current = settingsRef.current
-      if (!current) return
-      const next: Settings = { ...current, thinkingLevel: level }
-      setSettings(next)
-      try {
-        const saved = await bridge.invoke('settings:update', { settings: next })
-        setSettings(saved)
-      } catch (error) {
-        setSettings(current)
-        showNotice(humanizeError(error))
-      }
-    },
-    [bridge, showNotice],
+    (level: ThinkingLevel) =>
+      enqueueSettingsMutation((current) => ({ ...current, thinkingLevel: level })),
+    [enqueueSettingsMutation],
+  )
+
+  /**
+   * 启用池勾选(设置页模型清单):换掉 enabledModels 整体保存;
+   * 池满被纯函数拒绝时原样返回引用相等,链内直接跳过不发徒劳 IPC;保存失败回滚。
+   */
+  const toggleEnabledModel = useCallback(
+    (item: ProviderSelection) =>
+      enqueueSettingsMutation((current) => toggleEnabledModelInSettings(current, item)),
+    [enqueueSettingsMutation],
   )
 
   const saveCredential = useCallback(
@@ -1366,17 +1721,21 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   /**
    * 详情整页(批 2b):run 优先取列表里的活体(agent_run_updated 实时变状态),
    * 列表里找不到(切了会话/角色被删等)退回打开时的快照,页面不塌。
+   * 协作链(0.4.0 D):同 graph 已知 run 数 >1 才把缓存的整图挂上;单节点链恒 undefined。
    */
   const runDetailView = useMemo(() => {
     if (runDetailOpen === null) return null
     const run =
       agentRuns.find((r) => r.runId === runDetailOpen.runId) ?? runDetailOpen.snapshot
+    const peerCount = agentRuns.filter((r) => r.graphId === run.graphId).length
     return {
       run,
       detail: runDetails.get(runDetailOpen.runId),
       loading: runDetailLoading.has(runDetailOpen.runId),
+      graph: peerCount > 1 ? agentGraphs.get(run.graphId) : undefined,
+      graphLoading: peerCount > 1 && graphLoadingIds.has(run.graphId),
     }
-  }, [runDetailOpen, agentRuns, runDetails, runDetailLoading])
+  }, [runDetailOpen, agentRuns, runDetails, runDetailLoading, agentGraphs, graphLoadingIds])
 
   return {
     bootstrap,
@@ -1448,14 +1807,17 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     retryLast,
     lastFailedText,
     approvals,
+    commandLive,
     respondApproval,
     agentRuns,
     delegation,
     runDetailView,
     openAgentRunDetail,
     closeAgentRunDetail,
+    interruptRun,
     settings,
     selectProvider,
+    toggleEnabledModel,
     updateThinkingLevel,
     credentials,
     saveCredential,

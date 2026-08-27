@@ -32,6 +32,7 @@ describe('WorkerRunner', () => {
         }
       },
       abortSession() {},
+      async steerSession(): Promise<void> {},
     }
     const runner = new WorkerRunner(fake)
     const output = await runner.run({
@@ -58,6 +59,7 @@ describe('WorkerRunner', () => {
         return { sessionId: input.sessionId, status: 'failed', finalText: '', errorMessage: '模型错误' }
       },
       abortSession() {},
+      async steerSession(): Promise<void> {},
     }
     temp = await mkdtemp(join(tmpdir(), 'daweige-worker-runner-fail-'))
     const allowed = join(temp, 'allowed')

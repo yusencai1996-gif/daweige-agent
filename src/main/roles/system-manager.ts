@@ -40,6 +40,8 @@ export class ManagerSeedService {
     private readonly userDataPath: string,
     private readonly roleRepository: RoleRepository,
     private readonly sessionService: SessionService,
+    /** 0.4.0 A:resolver 在场=工作区可能已迁离默认位置,不再强制 mkdir 默认 workspace。 */
+    private readonly hasWorkspaceOverride?: () => boolean,
   ) {}
 
   async ensure(input: ManagerSeedInput): Promise<ManagerBootstrap> {
@@ -64,7 +66,8 @@ export class ManagerSeedService {
       })
     }
     // 角色行已存在但上次可能在建 home 前后中断;每次都幂等补齐。
-    await ensureSystemHome(this.userDataPath)
+    // 0.4.0 A:工作区已迁离(有覆盖)时只补 home 内的档案文件,不在 C 盘重建 workspace 空壳。
+    await ensureSystemHome(this.userDataPath, this.hasWorkspaceOverride?.() === true)
 
     const [bindings, metas, rememberedEntry] = await Promise.all([
       this.roleRepository.listBindingRows(),
@@ -112,9 +115,14 @@ function assertSystemManagerRow(row: RoleRow): void {
   }
 }
 
-async function ensureSystemHome(userDataPath: string): Promise<void> {
+async function ensureSystemHome(
+  userDataPath: string,
+  workspaceMigratedAway = false,
+): Promise<void> {
   const home = systemRoleHomePath(userDataPath)
-  await mkdir(systemManagerWorkspacePath(userDataPath), { recursive: true })
+  if (!workspaceMigratedAway) {
+    await mkdir(systemManagerWorkspacePath(userDataPath), { recursive: true })
+  }
   const profile: RoleProfile = {
     schemaVersion: 1,
     roleId: SYSTEM_MANAGER_ROLE_ID,

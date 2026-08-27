@@ -182,6 +182,14 @@
   word-break: break-all;
 }
 
+/* 数据明细(A-19):整段原文照排,保留模型输出的换行与缩进 */
+.delegation-detail-data {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ============ internal 只读详情整页(0.3.0 批 2b,PLAN §10.3) ============ */
 /* 与守则页/统计页同骨架:窄栏居中、头部一行、正文复用 MessageList 滚动区,无 Composer */
 .run-detail-pane {
@@ -321,4 +329,269 @@
 }
 .draft-card-hint {
   font-size: 12px;
+}
+
+/* ============ 协作链族谱(0.4.0 D 批 UI) ============ */
+/* 区块沿用 B2 卡片形态:1.5px 笔触边+非对称圆角+顶边一道两端收笔的笔触线;内部干净实底零条纹 */
+.run-graph {
+  position: relative;
+  background: var(--surface-strong);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 3px 6px 4px 7px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* 顶边笔触线与派活卡同款(两端收笔渐变,边框本体允许的飞白) */
+.run-graph::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 2px 3px 2px 4px;
+  background: linear-gradient(90deg, transparent 0, var(--line) 9%, var(--line) 91%, transparent 100%);
+  transform: rotate(-0.25deg);
+  pointer-events: none;
+}
+
+.run-graph-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.run-graph-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.run-graph-stats {
+  font-size: 12px;
+}
+
+/* 宽屏 DAG:节点位置全交 flex 流式布局(列=拓扑深度),SVG 只在锚点间补笔画线 */
+.run-graph-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.run-graph-board {
+  position: relative;
+  min-width: 100%;
+}
+.run-graph-columns {
+  display: flex;
+  align-items: center;
+  gap: 64px;
+  width: max-content;
+  min-width: 100%;
+}
+.run-graph-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.run-graph-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.run-graph-wire {
+  fill: none;
+  stroke: color-mix(in srgb, var(--ink) 30%, transparent);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+/* handoff 边=真交棒,墨色重一笔 */
+.run-graph-wire.handoff {
+  stroke: color-mix(in srgb, var(--ink) 58%, transparent);
+}
+.run-graph-label {
+  fill: var(--muted);
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+
+/* 节点卡:可点的是 <button>,当前 run 为静态 div 高亮;两者共用一套内嵌结构 */
+.run-node {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 244px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface-strong);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 3px 6px 4px 7px;
+  font-family: inherit;
+}
+button.run-node {
+  cursor: pointer;
+  transition: border-color 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+button.run-node:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+button.run-node:focus-visible,
+.run-node.is-current {
+  outline: none;
+  border-color: var(--accent);
+}
+.run-node.is-current {
+  /* 朱砂聚焦:描边之外只垫一圈淡朱砂底,不做大面积红 */
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-strong));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+  cursor: default;
+}
+.run-node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.run-node-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-node-state {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.run-node-task {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.run-node-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.run-node-meta {
+  font-size: 11.5px;
+}
+/* queued 排队原因 / interrupted 打断来源:弱化但读得出 */
+.run-node-hint {
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+
+/* 窄屏单列:拓扑序列表,上下游关系用文字行表达,不画线 */
+.run-graph-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.run-graph-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.run-graph-entry .run-node {
+  width: 100%;
+}
+.run-item-upstream {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  padding-left: 4px;
+}
+/* 文字行前一小段短线,示意"接上一棒",仍是边框笔触语义 */
+.run-item-upstream::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px 3px 2px 4px;
+  background: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+
+/* ============ 派活卡链摘要 + 打断入口(0.4.0 D) ============ */
+.delegation-chain {
+  position: relative;
+  display: inline-flex;
+  margin-left: auto;
+}
+.delegation-chain-btn {
+  font-size: 12px;
+}
+.delegation-chain-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 30;
+  min-width: 240px;
+  max-width: 300px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface-strong);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 3px 6px 4px 7px;
+  box-shadow: var(--shadow-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.delegation-chain-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 12.5px;
+  border-radius: var(--radius-sm);
+}
+.delegation-chain-name {
+  font-weight: 600;
+}
+.delegation-chain-cur {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--accent);
+}
+
+/* 打断:次级样式安静待命,hover 才落朱砂一笔;确认行整块铺开文案 */
+.btn-interrupt {
+  /* 卡是纵向 flex,单钮不随行拉伸,保持内容宽 */
+  align-self: flex-start;
+}
+.btn-interrupt:hover:not([disabled]) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.delegation-interrupt-confirm {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+.delegation-interrupt-text {
+  color: color-mix(in srgb, var(--accent) 80%, var(--ink));
 }

@@ -12,11 +12,13 @@ import type { DaweigeBridge } from '../../../shared/ipc/bridge'
 import type { ApprovalCardState, ContextUsageState } from '../../app/use-app-controller'
 import { ReminderBanner } from '../reminders/ReminderBanner'
 import { ApprovalCard } from '../approvals/ApprovalCard'
+import { CommandApprovalCard } from '../approvals/CommandApprovalCard'
 import { Composer } from './Composer'
 import { MessageList } from './MessageList'
 import { mergeTimeline } from '../manager/conversation-timeline'
 import type { DelegationCardActions } from '../manager/DelegationCard'
 import type { GuardrailsDraftCardActions } from '../manager/GuardrailsDraftCard'
+import type { CommandLiveChunks } from './command-live'
 import type { ChatMessage } from '../../../shared/domain'
 
 interface ChatViewProps {
@@ -39,6 +41,8 @@ interface ChatViewProps {
   /** 正在流式输出的 assistant 消息 id(message_start 置位,message_end 清空);思考块据此自动展开/折叠。 */
   readonly streamingMessageId: string | null
   readonly approvals: readonly ApprovalCardState[]
+  /** 命令实时输出(0.4.0 C):按 toolCallId 索引,CommandBlock 运行中数据源。 */
+  readonly commandLive: ReadonlyMap<string, CommandLiveChunks>
   readonly streaming: boolean
   readonly sending: boolean
   readonly chatError: string | null
@@ -48,6 +52,8 @@ interface ChatViewProps {
   readonly onDraftChange: (text: string) => void
   readonly providers: readonly ProviderInfo[]
   readonly selection: ProviderSelection
+  /** 启用池(settings.enabledModels);undefined/空=老数据,模型面板回退只显示当前一项。 */
+  readonly enabledModels?: readonly ProviderSelection[] | undefined
   readonly thinkingLevel: ThinkingLevel
   readonly reminders: readonly Reminder[]
   readonly onToggleSidebar: () => void
@@ -78,6 +84,7 @@ export function ChatView({
   roleName,
   streamingMessageId,
   approvals,
+  commandLive,
   streaming,
   sending,
   chatError,
@@ -86,6 +93,7 @@ export function ChatView({
   onDraftChange,
   providers,
   selection,
+  enabledModels,
   thinkingLevel,
   reminders,
   onToggleSidebar,
@@ -183,6 +191,7 @@ export function ChatView({
           onRetry={onRetry}
           delegation={delegation}
           draftActions={draftActions}
+          commandLive={commandLive}
         />
       )}
 
@@ -199,9 +208,13 @@ export function ChatView({
         {floatingApprovals.length > 0 && (
           <div className="approval-overlay">
             <div className="approval-stack">
-              {floatingApprovals.map((card) => (
-                <ApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
-              ))}
+              {floatingApprovals.map((card) =>
+                card.request.kind === 'command' ? (
+                  <CommandApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
+                ) : (
+                  <ApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
+                ),
+              )}
             </div>
           </div>
         )}
@@ -217,6 +230,7 @@ export function ChatView({
           contextUsage={contextUsage}
           providers={providers}
           selection={selection}
+          enabledModels={enabledModels}
           supportsThinking={supportsThinking}
           thinkingLevel={thinkingLevel}
           onToggleSidebar={onToggleSidebar}

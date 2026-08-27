@@ -69,6 +69,54 @@ describe('delegation result parser', () => {
     expect(parseDelegationResult(tooLongField, CRITERIA).unmetCriteria).toEqual(CRITERIA)
   })
 
+  it('A-19 五键带 detailData 合法解析;旧四键不带仍合法(向后兼容)', () => {
+    const withDetail = parseDelegationResult(
+      block({
+        summary: '汇总完成',
+        conclusions: ['总计 20370'],
+        artifactPaths: [],
+        unmetCriteria: [],
+        detailData: '城中店 7850;东门店 6700;南山店 5820',
+      }),
+      CRITERIA,
+    )
+    expect(withDetail.detailData).toBe('城中店 7850;东门店 6700;南山店 5820')
+    const legacy = parseDelegationResult(
+      block({ summary: '已完成', conclusions: ['A'], artifactPaths: [], unmetCriteria: [] }),
+      CRITERIA,
+    )
+    expect(legacy.detailData).toBeUndefined()
+  })
+
+  it('A-19 detailData 超长(>4000)/类型错/显式 null fail closed(复审补)', () => {
+    const tooLong = parseDelegationResult(
+      block({
+        summary: 'x',
+        conclusions: [],
+        artifactPaths: [],
+        unmetCriteria: [],
+        detailData: 'x'.repeat(4_001),
+      }),
+      CRITERIA,
+    )
+    expect(tooLong.unmetCriteria).toEqual(CRITERIA)
+    const wrongType = parseDelegationResult(
+      block({ summary: 'x', conclusions: [], artifactPaths: [], unmetCriteria: [], detailData: 123 }),
+      CRITERIA,
+    )
+    expect(wrongType.unmetCriteria).toEqual(CRITERIA)
+    const nullDetail = parseDelegationResult(
+      block({ summary: 'x', conclusions: [], artifactPaths: [], unmetCriteria: [], detailData: null }),
+      CRITERIA,
+    )
+    expect(nullDetail.unmetCriteria).toEqual(CRITERIA)
+    const emptyString = parseDelegationResult(
+      block({ summary: 'x', conclusions: [], artifactPaths: [], unmetCriteria: [], detailData: '' }),
+      CRITERIA,
+    )
+    expect(emptyString.unmetCriteria).toEqual(CRITERIA)
+  })
+
   it('artifactPaths 再过 strict policy;越界产物不采信,主进程 violation 合并', async () => {
     const reported: DelegationPathViolation[] = []
     const policy = new StrictDelegationPathPolicy([allowed], appData, (item) => {

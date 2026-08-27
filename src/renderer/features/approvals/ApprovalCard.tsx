@@ -52,13 +52,19 @@ export function ApprovalCard({ card, onRespond }: ApprovalCardProps) {
   const { request, phase } = card
   const [note, setNote] = useState('')
   const interactive = phase === 'pending' && !card.responded
+  const isCommand = request.kind === 'command'
+  // command(0.4.0 C)最小过渡:C4 换 CommandApprovalCard 专用渲染;
+  // 这里先展示通用字段+命令原文,不给会话级授权(独立 CommandApprovalCache 语义)
+  const fileRequest = isCommand ? undefined : request
   // 「本次会话全部允许」只对工作区内、非删除、有工具名的操作开放(A-01/A-03);
   // 守则修改(role-rules-edit)按契约永远逐次确认(PLAN §3.3),不给会话级授权。
   const canApproveSession =
-    request.toolName !== undefined &&
-    request.kind !== 'delete' &&
-    request.kind !== 'role-rules-edit' &&
-    request.outsideWorkspace === false
+    !isCommand &&
+    fileRequest !== undefined &&
+    fileRequest.toolName !== undefined &&
+    fileRequest.kind !== 'delete' &&
+    fileRequest.kind !== 'role-rules-edit' &&
+    fileRequest.outsideWorkspace === false
 
   return (
     <section className="approval-card" aria-label={`确认操作:${request.title}`}>
@@ -70,23 +76,34 @@ export function ApprovalCard({ card, onRespond }: ApprovalCardProps) {
       <div className="approval-title">{request.title}</div>
       <div className="approval-desc">{request.description}</div>
 
-      <div className="approval-meta">
-        <span>一共 {request.itemCount} 项</span>
-        {request.kind === 'delete' && (
-          <span>{request.recoverable ? '删到回收站,后悔了能捞回来' : '彻底删除,捞不回来'}</span>
-        )}
-      </div>
+      {isCommand ? (
+        <div className="approval-meta">
+          <code className="approval-command-text">{request.command}</code>
+          <span>在 {request.cwd} 运行 · 超时 {Math.round(request.timeoutMs / 1000)} 秒</span>
+        </div>
+      ) : (
+        fileRequest && (
+          <>
+            <div className="approval-meta">
+              <span>一共 {fileRequest.itemCount} 项</span>
+              {fileRequest.kind === 'delete' && (
+                <span>{fileRequest.recoverable ? '删到回收站,后悔了能捞回来' : '彻底删除,捞不回来'}</span>
+              )}
+            </div>
 
-      {request.samplePaths.length > 0 && (
-        <ul className="approval-paths">
-          {request.samplePaths.map((path) => (
-            <li key={path}>{path}</li>
-          ))}
-        </ul>
-      )}
+            {fileRequest.samplePaths.length > 0 && (
+              <ul className="approval-paths">
+                {fileRequest.samplePaths.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            )}
 
-      {request.outsideWorkspace && (
-        <div className="approval-outside">注意:这在你的工作文件夹外面。</div>
+            {fileRequest.outsideWorkspace && (
+              <div className="approval-outside">注意:这在你的工作文件夹外面。</div>
+            )}
+          </>
+        )
       )}
 
       {phase === 'pending' && (
@@ -110,7 +127,9 @@ export function ApprovalCard({ card, onRespond }: ApprovalCardProps) {
               disabled={!interactive}
               onClick={() => onRespond(card, 'approve', note)}
             >
-              {approveLabel(request.kind, request.recoverable)}
+              {isCommand
+                ? '只运行这一次'
+                : approveLabel(fileRequest!.kind, fileRequest!.recoverable)}
             </button>
             {canApproveSession && (
               <button

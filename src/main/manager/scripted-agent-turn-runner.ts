@@ -5,7 +5,7 @@ export class ScriptedAgentTurnRunner implements AgentTurnRunner {
   private readonly aborted = new Set<string>()
 
   constructor(
-    private readonly scenario: 'manager-happy' | 'manager-boundary' | 'manager-crash',
+    private readonly scenario: 'manager-happy' | 'manager-boundary' | 'manager-crash' | 'collab-hang',
     private readonly recordBoundary?: (sessionId: string) => Promise<void>,
     private readonly recordTranscript?: (
       input: AgentTurnInput,
@@ -18,7 +18,9 @@ export class ScriptedAgentTurnRunner implements AgentTurnRunner {
     if (this.aborted.delete(input.sessionId)) {
       return { sessionId: input.sessionId, status: 'aborted', finalText: '' }
     }
-    if (this.scenario === 'manager-crash') {
+    if (this.scenario === 'manager-crash' || this.scenario === 'collab-hang') {
+      // 挂起不返回:collab E2E 需要 run 停在 running 态供测试断言并行/followup/interrupt;
+      // interrupt 走 DB CAS,run 状态由状态机保证,promise 挂到测试关进程为止
       return new Promise(() => {})
     }
     if (this.scenario === 'manager-boundary') await this.recordBoundary?.(input.sessionId)
@@ -36,5 +38,9 @@ export class ScriptedAgentTurnRunner implements AgentTurnRunner {
 
   abortSession(sessionId: string): void {
     this.aborted.add(sessionId)
+  }
+
+  async steerSession(): Promise<void> {
+    // E2E 脚本 runner 没有 pi steering 循环;followup 场景走 faux provider 组合
   }
 }

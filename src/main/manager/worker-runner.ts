@@ -55,6 +55,11 @@ export class WorkerRunner {
     this.runner.abortSession(sessionId)
   }
 
+  /** followup(PLAN §6.5):同一个 run() promise 覆盖 steering 后续轮次,最终只解析最后结果块。 */
+  async steerSession(sessionId: string, text: string): Promise<void> {
+    await this.runner.steerSession(sessionId, text)
+  }
+
   stopAccepting(): void {
     this.accepting = false
   }

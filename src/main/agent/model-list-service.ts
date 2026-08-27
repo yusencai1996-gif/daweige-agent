@@ -2,7 +2,7 @@ import type { ModelOption } from '../../shared/ipc/contracts'
 import type { ProviderId } from '../../shared/domain/provider'
 import { PROVIDER_ENV_KEYS } from '../security/credential-store'
 import type { CredentialStore } from '../security/credential-store'
-import { PROVIDER_CATALOG, defaultModelFor } from '../agent/provider-catalog'
+import { PROVIDER_CATALOG, defaultModelFor, KNOWN_MODEL_WINDOWS } from '../agent/provider-catalog'
 
 /**
  * 模型列表服务(A-10):填完 key 后在线拉取厂商可选模型,
@@ -24,13 +24,7 @@ const MODELS_URL: Partial<Record<ProviderId, string>> = {
   deepseek: 'https://api.deepseek.com/models',
 }
 
-/** 本地规格表:厂商默认模型的上下文长度(PROVIDER_CATALOG 权威;其余在线模型标未知)。 */
-const KNOWN_WINDOWS: Partial<Record<ProviderId, Record<string, number>>> = {
-  'kimi-coding': { 'kimi-for-coding': 262144 },
-  zai: { 'glm-5.3': 1_000_000 },
-  'zai-coding-cn': { 'glm-5.3': 1_000_000 },
-  deepseek: { 'deepseek-v4-flash': 1_000_000 },
-}
+// 本地规格表已挪 provider-catalog(KNOWN_MODEL_WINDOWS),registry 兜底构造同源复用
 
 const FETCH_TIMEOUT_MS = 10_000
 
@@ -74,13 +68,16 @@ export async function listProviderModels(
         return { models: catalogFallback(providerId), notice: `在线拉取没成功(服务端返回 ${res.status}),先显示默认模型` }
       }
       const body = (await res.json()) as { data?: Array<{ id?: unknown }> }
-      const ids = (body.data ?? [])
-        .map((m) => (typeof m.id === 'string' ? m.id : undefined))
-        .filter((id): id is string => id !== undefined)
+      // A-20:服务端可能返回重复条目(实测 GLM 列表 glm-5.3-flash 出现两次),拉取后去重
+      const ids = [...new Set(
+        (body.data ?? [])
+          .map((m) => (typeof m.id === 'string' ? m.id : undefined))
+          .filter((id): id is string => id !== undefined),
+      )]
       if (ids.length === 0) {
         return { models: catalogFallback(providerId), notice: '在线列表是空的,先显示默认模型' }
       }
-      const windows = KNOWN_WINDOWS[providerId] ?? {}
+      const windows = KNOWN_MODEL_WINDOWS[providerId] ?? {}
       const online: ModelOption[] = ids.map((id) => ({
         id,
         ...(windows[id] !== undefined ? { contextWindow: windows[id] } : {}),
@@ -104,6 +101,6 @@ function catalogFallback(providerId: ProviderId): ModelOption[] {
   const entry = PROVIDER_CATALOG.find((p) => p.id === providerId)
   const id = entry?.defaultModelId ?? ''
   if (!id) return []
-  const windows = KNOWN_WINDOWS[providerId] ?? {}
+  const windows = KNOWN_MODEL_WINDOWS[providerId] ?? {}
   return [{ id, ...(windows[id] !== undefined ? { contextWindow: windows[id] } : {}), source: 'catalog' }]
 }

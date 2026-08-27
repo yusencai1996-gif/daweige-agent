@@ -44,6 +44,41 @@ function ctx(name: string, args: Record<string, unknown>): BeforeToolCallContext
 }
 
 describe('approval gate(beforeToolCall)', () => {
+  it('写操作租约复检(终验·TOCTOU):确认等待窗内新到的租约,批准/approve-session 后仍被挡', async () => {
+    const p = join(workspace, 'lease.txt')
+    // 奇数次(弹卡前)放行;偶数次(批准后复检)抛"正被派活使用"——模拟确认等待窗内租约新到
+    let calls = 0
+    const policy = new PathPolicy(workspace, appData)
+    const g = createApprovalGate({
+      broker,
+      sessionId: 's1',
+      policy,
+      assertNotLeased: async () => {
+        calls += 1
+        if (calls % 2 === 0) throw new Error('这个文件夹正被一条派活使用(c:/ws),等它结束再试;读取不受影响')
+      },
+    })
+    const pending = g(ctx('write_file', { path: p, content: 'x' }))
+    await waitForCard()
+    const card = events.find((e) => e.type === 'approval_required')
+    const req = card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command' ? card.request : undefined
+    broker.resolve({ approvalId: req?.id ?? '', decision: 'approve' })
+    const result = await pending
+    expect(result).toEqual({ block: true, reason: expect.stringContaining('正被一条派活使用') })
+    expect(calls).toBe(2)
+
+    // approve-session 同样不能绕过:弹卡前(calls=3)放行,批准后复检(calls=4)仍被挡
+    events.length = 0
+    const pending2 = g(ctx('write_file', { path: p, content: 'y' }))
+    await waitForCard()
+    const card2 = events.find((e) => e.type === 'approval_required')
+    const req2 = card2 && card2.type === 'approval_required' && card2.request.kind !== 'delegation' && card2.request.kind !== 'command' ? card2.request : undefined
+    broker.resolve({ approvalId: req2?.id ?? '', decision: 'approve-session' })
+    const result2 = await pending2
+    expect(result2).toEqual({ block: true, reason: expect.stringContaining('正被一条派活使用') })
+  })
+
+
   it('读工作区内文件:直接放行(undefined),不产生确认卡', async () => {
     const p = join(workspace, 'a.txt')
     await writeFile(p, 'x')
@@ -60,7 +95,7 @@ describe('approval gate(beforeToolCall)', () => {
     const pending = g(ctx('read_file', { path: outside }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    const req = card && card.type === 'approval_required' && card.request.kind !== 'delegation' ? card.request : undefined
+    const req = card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command' ? card.request : undefined
     expect(req?.kind).toBe('outside-read')
     expect(req?.outsideWorkspace).toBe(true)
 
@@ -119,7 +154,7 @@ describe('approval gate(beforeToolCall)', () => {
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
     const req =
-      card && card.type === 'approval_required' && card.request.kind !== 'delegation'
+      card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command'
         ? card.request
         : undefined
     expect(req?.recoverable).toBe(true)
@@ -162,7 +197,7 @@ describe('approval gate(beforeToolCall)', () => {
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
     const req =
-      card && card.type === 'approval_required' && card.request.kind !== 'delegation'
+      card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command'
         ? card.request
         : undefined
     expect(req?.itemCount).toBe(2)
@@ -181,7 +216,7 @@ describe('会话级授权(A-01 approve-session)', () => {
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
     const req =
-      card && card.type === 'approval_required' && card.request.kind !== 'delegation'
+      card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command'
         ? card.request
         : undefined
     expect(req?.toolName).toBe('write_file')

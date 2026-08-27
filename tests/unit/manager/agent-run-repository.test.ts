@@ -9,7 +9,6 @@ import type {
   DelegationResult,
 } from '../../../src/shared/domain/manager'
 import {
-  AgentRunSlotOccupiedError,
   AgentRunTransitionError,
   RoleAgentRunBusyError,
   RoleRepository,
@@ -91,40 +90,47 @@ describe('agent_runs schema 与串行槽', () => {
     expect(await repo.listAgentRuns()).toEqual([])
   })
 
-  it('建表和 schema 版本幂等,DDL 为 WITHOUT ROWID 且三个索引齐全', async () => {
-    expect(await repo.getMeta('manager_schema_version')).toBe('1')
+  it('建表和 schema 版本幂等,DDL 为 WITHOUT ROWID 且四个索引齐全(v2 无串行槽)', async () => {
+    expect(await repo.getMeta('manager_schema_version')).toBe('2')
     await repo.drainAndClose()
     repo = new RoleRepository(databasePath)
-    expect(await repo.getMeta('manager_schema_version')).toBe('1')
+    expect(await repo.getMeta('manager_schema_version')).toBe('2')
     const db = new DatabaseSync(databasePath, { readOnly: true })
     try {
       const table = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'").get() as { sql: string }
       expect(table.sql).toContain('WITHOUT ROWID')
+      // v2(0.4.0 D):串行槽列物理移除,协作链列就位
+      expect(table.sql).not.toContain('serial_slot')
+      expect(table.sql).toContain('graph_id')
       const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agent_runs'").all() as Array<{ name: string }>
       expect(indexes.map((row) => row.name)).toEqual(
         expect.arrayContaining([
           'idx_agent_runs_manager_created',
           'idx_agent_runs_target',
           'idx_agent_runs_internal',
+          'idx_agent_runs_graph',
         ]),
       )
+      const edges = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_run_edges'").get() as { sql: string } | undefined
+      const inputs = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_run_inputs'").get() as { sql: string } | undefined
+      const leases = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_run_workspace_leases'").get() as { sql: string } | undefined
+      expect(edges?.sql).toContain('WITHOUT ROWID')
+      expect(inputs?.sql).toContain('WITHOUT ROWID')
+      expect(leases?.sql).toContain('WITHOUT ROWID')
     } finally {
       db.close()
     }
   })
 
-  it('并发 spawn 只有一个占槽,终态释放后下一条可进入', async () => {
-    const settled = await Promise.allSettled([
-      spawn('run-0000000000000001'),
-      spawn('run-0000000000000002'),
-    ])
-    expect(settled.filter((item) => item.status === 'fulfilled')).toHaveLength(1)
-    const rejected = settled.find((item) => item.status === 'rejected')
-    expect(rejected && rejected.status === 'rejected' ? rejected.reason : null).toBeInstanceOf(
-      AgentRunSlotOccupiedError,
-    )
-    const active = (await repo.listAgentRuns())[0]!
-    await repo.transitionAgentRun(active.runId, { status: 'rejected' })
+  it('调度器批后无单活闸门:多 run 可同时 awaiting/queued/running 并存(并发由调度器+租约管)', async () => {
+    // 0.4.0 D 调度器批:createAgentRun 不再挡并行;并发上限/依赖/根互斥由
+    // AgentRunScheduler(决策)和 acquireLeasesAndStart(物理互斥)接管
+    await spawn('run-0000000000000001')
+    await spawn('run-0000000000000002')
+    await repo.transitionAgentRun('run-0000000000000001', { status: 'queued' })
+    await repo.transitionAgentRun('run-0000000000000002', { status: 'queued' })
+    // 两条 queued 并存(不再抛"已有派活正在进行")
+    await expect(repo.listQueuedAgentRuns()).resolves.toHaveLength(2)
     await expect(spawn('run-0000000000000003')).resolves.toMatchObject({
       status: 'awaiting-approval',
     })

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
+import { realpath } from 'node:fs/promises'
 import { createMainWindow } from './window'
 import { installCspHeader } from './security/csp'
 import { redactCommonSecrets } from './security/redaction'
@@ -12,6 +13,24 @@ import { RoleRepository } from './roles/role-repository'
 import { RoleService } from './roles/role-service'
 import { RoleMigration } from './roles/role-migration'
 import { ManagerSeedService } from './roles/system-manager'
+import { ManagerWorkspaceResolver } from './manager-workspace/resolver'
+import {
+  ManagerWorkspaceMigrationService,
+} from './manager-workspace/migration-service'
+import { registerManagerWorkspaceHandlers } from './ipc/manager-workspace-handlers'
+import { CapabilityStore } from './sandbox/capability-store'
+import { CommandApprovalCache } from './command/command-approval-cache'
+import { createRunCommandTool } from './agent/tools/run-command'
+import {
+  CAP_SID_ENV_KEY,
+  launchHelperTransport,
+  type FrameTransport,
+} from './sandbox/sandbox-process-host'
+import {
+  FakeSandboxExecutor,
+  FramedSandboxExecutor,
+  type SandboxExecutor,
+} from './sandbox/executor'
 import {
   SYSTEM_MANAGER_ROLE_ID,
   type ManagerBootstrap,
@@ -48,6 +67,7 @@ import { registerUpdateHandlers } from './ipc/update-handlers'
 import { registerUsageHandlers } from './ipc/usage-handlers'
 import { registerAgentRunHandlers } from './ipc/agent-run-handlers'
 import { WorkerRunner } from './manager/worker-runner'
+import { WorkspaceLeaseService } from './manager/workspace-lease-service'
 import { ManagerOrchestrator } from './manager/manager-orchestrator'
 import { AgentRunQueryService } from './manager/agent-run-query-service'
 import { AgentRunRecovery } from './manager/agent-run-recovery'
@@ -55,6 +75,13 @@ import { ManagerCleanupService } from './manager/manager-cleanup-service'
 import { ScriptedAgentTurnRunner } from './manager/scripted-agent-turn-runner'
 import type { AgentTurnRunner } from './agent/agent-service'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
+import { createModels } from '@earendil-works/pi-ai'
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+  fauxToolCall,
+} from '@earendil-works/pi-ai/providers/faux'
 import { currentIanaTimeZone, localDateFor } from './usage/usage-parser'
 import { UpdateService } from './update/update-service'
 import { WorkspaceAuthorization } from './ipc/workspace-auth'
@@ -83,8 +110,9 @@ app.on('second-instance', () => {
 })
 
 // E2E 测试注入:显式设置 DAWEIGE_USER_DATA 时用独立 userData(临时目录),
-// 避免测试建删角色污染真实开发库;正常启动不设此变量,不受影响
-if (process.env.DAWEIGE_USER_DATA) {
+// 避免测试建删角色污染真实开发库;正常启动不设此变量,不受影响。
+// 双门铁律:打包版无条件忽略(生产环境变量不能重定向用户数据目录)
+if (!app.isPackaged && process.env.DAWEIGE_USER_DATA) {
   app.setPath('userData', process.env.DAWEIGE_USER_DATA)
 }
 
@@ -102,6 +130,8 @@ app.whenReady().then(async () => {
     secretsDir: join(userData, 'secrets'),
   })
   const settingsStore = new SettingsStore(join(userData, 'settings.json'))
+  // 0.4.0 A(A-14):总管工作区解析器——manager 会话 cwd 的唯一权威来源
+  const managerWorkspaceResolver = new ManagerWorkspaceResolver(userData, settingsStore)
   sessionRepository = new SessionRepository(join(userData, 'data', 'sessions.sqlite'))
   // 角色层(0.2.0):角色库与 pi 会话库分离;库损坏不拦启动(角色功能降级)
   let roleService: RoleService | undefined
@@ -113,13 +143,23 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[roles] 角色库初始化失败,本次运行关闭角色功能:', err instanceof Error ? err.message : err)
   }
-  const sessionService = new SessionService(sessionRepository, roleRepository, roleService, userData)
+  const sessionService = new SessionService(
+    sessionRepository,
+    roleRepository,
+    roleService,
+    userData,
+    managerWorkspaceResolver,
+  )
   const providerRegistry = new ProviderRegistry(credentialStore)
   const connectivityService = new ConnectivityService(providerRegistry, credentialStore)
 
   const emitAgentEvent = (event: AgentPushEvent): void => {
     for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(PUSH_CHANNELS[0], event)
+      try {
+        win.webContents.send(PUSH_CHANNELS[0], event)
+      } catch {
+        // 窗口销毁瞬间 send 可能抛:推送丢失可接受,绝不传染工具执行结果(如已跑完的命令被翻成 failed)
+      }
     }
   }
   // 使用统计:库损坏/不可建时整体降级(只关统计功能,绝不拦应用启动)——后端复审整改项
@@ -148,11 +188,118 @@ app.whenReady().then(async () => {
   const updateService = new UpdateService({ emitEvent: emitAgentEvent })
   approvalBrokerRef = approvalBroker
   const workspaceAuth = new WorkspaceAuthorization()
+  // 双门 E2E 场景注入(0.4.0 C):非打包 + 独立 userData 才认(packaged 一律忽略,不进生产装配)
+  const e2eScenario = !app.isPackaged && process.env.DAWEIGE_USER_DATA
+    ? process.env.DAWEIGE_E2E_SCENARIO
+    : undefined
+  // 0.4.0 C3:命令能力装配(capability 钥匙库+精确缓存+惰性沙箱执行器)
+  const capabilityStore = new CapabilityStore(join(userData, 'sandbox', 'capabilities-v1.json'))
+  const commandApprovalCache = new CommandApprovalCache()
+  const sandboxTransportRef: { current?: Promise<FrameTransport> } = {}
+  const sandboxExecutor: SandboxExecutor = e2eScenario === 'command-happy'
+    // E2E:fake 沙箱(只替换 OS spawn;Policy/审批/工具编排全真),预脚本化本场景唯一命令
+    ? new FakeSandboxExecutor().script('python summarize.py', {
+        output: '合计 42 行,共 3 个文件',
+        exitCode: 0,
+      })
+    : {
+    async run(input, events, signal) {
+      // 惰性起 helper;失败清引用下次重试(fail-closed:错误传工具层转人话)
+      if (!sandboxTransportRef.current) {
+        sandboxTransportRef.current = launchHelperTransport((msg) =>
+          console.error(`[sandbox] ${redactCommonSecrets(msg)}`),
+        ).catch((err) => {
+          sandboxTransportRef.current = undefined
+          throw err
+        })
+      }
+      const transport = await sandboxTransportRef.current
+      const executor = new FramedSandboxExecutor(transport, (capSid) => ({
+        SystemRoot: 'C:\Windows',
+        WINDIR: 'C:\Windows',
+        ComSpec: 'C:\Windows\System32\cmd.exe',
+        PATH: 'C:\Windows\System32;C:\Windows',
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        TEMP: process.env.TEMP ?? 'C:\Windows\Temp',
+        TMP: process.env.TMP ?? 'C:\Windows\Temp',
+        USERPROFILE: process.env.USERPROFILE ?? 'C:\Users\Public',
+        [CAP_SID_ENV_KEY]: capSid,
+      }))
+      return executor.run(input, events, signal)
+    },
+  }
   const memoryStore = new MemoryStore(join(userData, 'data', 'memories.json'))
   const reminderService = new ReminderService(() => memoryStore.load())
   let managerOrchestrator: ManagerOrchestrator | undefined
+  // 工作区租约门(0.4.0 D,阶段复审阻断整改):普通/manager 会话的写与命令不得碰被占根
+  const workspaceLeaseService = roleRepository ? new WorkspaceLeaseService(roleRepository) : undefined
+  // command/collab E2E:faux 模型多步脚本(发起工具调用→收到结果后收尾)。
+  // 只 fake 模型流与 OS spawn;agent loop/事件流/Policy/审批/工具编排全真。
+  // collab 场景的工具参数由测试经 env 传入(seed 时定死的 runId/角色/目录)。
+  const fauxModelsForScenario = (() => {
+    if (e2eScenario === 'command-happy') {
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxText('我先跑条只读命令,统计一下这个文件夹里的行数。'),
+          fauxToolCall('run_command', { command: 'python summarize.py' }),
+        ]),
+        fauxAssistantMessage([fauxText('看完了:合计 42 行,共 3 个文件,都在预算内。')]),
+      ])
+      return faux
+    }
+    if (e2eScenario === 'collab-followup') {
+      const runId = process.env.DAWEIGE_E2E_RUN_ID ?? ''
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxText('收到,我把这句补充要求转给正在干活的角色。'),
+          fauxToolCall('followup_task', { runId, message: '顺便把汇总表也核对一遍,数字和明细对不上要标出来。' }),
+        ]),
+        fauxAssistantMessage([fauxText('补充要求已经送达,它会在当前步骤结束后看到。')]),
+      ])
+      return faux
+    }
+    if (e2eScenario === 'collab-pipeline') {
+      const sourceRunId = process.env.DAWEIGE_E2E_RUN_ID ?? ''
+      const targetRoleId = process.env.DAWEIGE_E2E_TARGET_ROLE ?? ''
+      const targetWorkspace = process.env.DAWEIGE_E2E_WS_B ?? ''
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxText('账房已经汇总完,我把它的定论交给小编写通报。'),
+          fauxToolCall('send_message', {
+            sourceRunIds: [sourceRunId],
+            targetRoleId,
+            managerConclusion: '以账房汇总数据为准,数字不许改。',
+            taskBrief: '把账房的汇总写成一篇门店通报,面向店长。',
+            acceptanceCriteria: ['数字与汇总一致', '有标题和正文'],
+            allowedWorkspacePaths: [targetWorkspace],
+          }),
+        ]),
+        fauxAssistantMessage([fauxText('已交棒并派出小编,确认卡等用户批准,批准后它就开始写。')]),
+      ])
+      return faux
+    }
+    return undefined
+  })()
+  const commandFauxModels = fauxModelsForScenario
+    ? (() => {
+        const fauxModels = createModels()
+        fauxModels.setProvider(fauxModelsForScenario.provider)
+        const fauxModel = fauxModelsForScenario.getModel()
+        return {
+          getModel: () => fauxModel,
+          streamSimple: (
+            model: Parameters<typeof fauxModels.streamSimple>[0],
+            context: Parameters<typeof fauxModels.streamSimple>[1],
+            options: Parameters<typeof fauxModels.streamSimple>[2],
+          ) => fauxModels.streamSimple(model, context, options),
+        }
+      })()
+    : undefined
   const agentService = new AgentService({
-    models: {
+    models: commandFauxModels ?? {
       getModel: (providerId, modelId) =>
         providerRegistry.getModel(
           providerId as Parameters<typeof providerRegistry.getModel>[0],
@@ -170,9 +317,69 @@ app.whenReady().then(async () => {
       const row = binding && roleRepository
         ? await roleRepository.getRoleRow(binding.roleId)
         : undefined
+
+      /** 0.4.0 C3:按会话构造 run_command 工具(写根 real 快照+capability 钥匙)。 */
+      const makeRunCommandToolFor = async (
+        roots: readonly string[],
+        opts: {
+          readonly strictPolicy?: PathPolicy
+          readonly scopeId?: string
+          readonly surfaceSessionId?: string
+          readonly assertNotLeased?: () => Promise<void>
+        } = {},
+      ) => {
+        const realRoots = (await Promise.all(roots.map((r) => realpath(r)))).filter(
+          (r, i, arr) => arr.indexOf(r) === i,
+        )
+        if (realRoots.length === 0) return undefined
+        const primaryRoot = realRoots[0] as string
+        const capSid = await capabilityStore.sidForRoot(primaryRoot)
+        return createRunCommandTool({
+          sessionId,
+          ...(opts.surfaceSessionId ? { surfaceSessionId: opts.surfaceSessionId } : {}),
+          broker: approvalBroker,
+          cache: commandApprovalCache,
+          executor: sandboxExecutor,
+          writableRoots: realRoots,
+          defaultCwd: primaryRoot,
+          capabilitySid: capSid,
+          // 一期保守:每次工具执行独立 turn 作用域(turn 粘性不生效,宁多弹卡不放大授权);
+          // 跨回合复用仅经 approve-session 的精确键缓存。
+          approvalScopeId: () => `${sessionId}#${Date.now()}#${Math.random()}`,
+          scopeId: opts.scopeId ?? '',
+          onOutput: (toolCallId, stream, sequence, text) => {
+            emitAgentEvent({
+              type: 'command_output',
+              sessionId,
+              toolCallId,
+              stream,
+              sequence,
+              chunk: text,
+              ...(opts.surfaceSessionId ? { surfaceSessionId: opts.surfaceSessionId } : {}),
+            })
+          },
+          onFinished: (toolCallId, result) => {
+            emitAgentEvent({
+              type: 'command_finished',
+              sessionId,
+              toolCallId,
+              result,
+              ...(opts.surfaceSessionId ? { surfaceSessionId: opts.surfaceSessionId } : {}),
+            })
+          },
+          ...(opts.strictPolicy ? { strictPolicy: opts.strictPolicy } : {}),
+          ...(opts.assertNotLeased ? { assertNotLeased: opts.assertNotLeased } : {}),
+        })
+      }
+
       if (row?.kind === 'manager') {
         const policy = new PathPolicy(workspacePath, userData)
         const ops = new FileOps(policy)
+        const runCmd = await makeRunCommandToolFor([workspacePath], {
+          assertNotLeased: async () => {
+            await workspaceLeaseService?.assertNotLeased([workspacePath])
+          },
+        })
         return {
           tools: buildTools(
             {
@@ -181,6 +388,7 @@ app.whenReady().then(async () => {
               trash: (p) => shell.trashItem(p),
               memoryTools: () => createMemoryTools(memoryStore),
               managerTools: () => managerOrchestrator?.toolsForSession(sessionId) ?? [],
+              ...(runCmd ? { runCommandTool: () => runCmd } : {}),
             },
             'manager',
           ),
@@ -208,6 +416,17 @@ app.whenReady().then(async () => {
           )
         : new PathPolicy(workspacePath, userData)
       const ops = new FileOps(policy)
+      const runCmd = delegatedRun
+        ? await makeRunCommandToolFor(delegatedRun.envelope.allowedWorkspacePaths, {
+            strictPolicy: policy,
+            scopeId: delegatedRun.runId,
+            surfaceSessionId: delegatedRun.managerSessionId,
+          })
+        : await makeRunCommandToolFor([workspacePath], {
+            assertNotLeased: async () => {
+              await workspaceLeaseService?.assertNotLeased([workspacePath])
+            },
+          })
       return {
         tools: buildTools(
           {
@@ -219,6 +438,7 @@ app.whenReady().then(async () => {
               roleRepository && roleService
                 ? [createEditRoleGuardrailsTool({ sessionId, roleRepository, roleService })]
                 : [],
+            ...(runCmd ? { runCommandTool: () => runCmd } : {}),
           },
           delegatedRun ? 'delegated-worker' : 'regular-worker',
         ),
@@ -228,7 +448,7 @@ app.whenReady().then(async () => {
           policy,
           ...(delegatedRun
             ? { surfaceSessionId: delegatedRun.managerSessionId }
-            : {}),
+            : { assertNotLeased: (paths) => workspaceLeaseService!.assertNotLeased(paths) }),
           ...(delegatedRun
             ? { onApprovalPending: (waiting: boolean) => managerOrchestrator?.markChildApproval(sessionId, waiting) }
             : {}),
@@ -322,6 +542,8 @@ app.whenReady().then(async () => {
       })
     },
     thinkingLevel: () => settingsStore.current()?.thinkingLevel,
+    // 0.4.0 A(A-14):manager 会话 effective cwd 覆盖(迁移后旧会话立即指向新工作区)
+    managerCwdOverride: (sessionId) => sessionService.managerCwdOverride(sessionId),
     // 转发对象而非直传 usageService:断开两者初始化的类型循环(闭包运行时求值);
     // 统计降级(usageService=undefined)时跳过记录
     usageRecorder: usageService
@@ -365,13 +587,16 @@ app.whenReady().then(async () => {
         agentService,
         usageStore,
       )
-      const e2eScenario = !app.isPackaged && process.env.DAWEIGE_USER_DATA
-        ? process.env.DAWEIGE_E2E_SCENARIO
-        : undefined
-      const scriptedScenarios = new Set(['manager-happy', 'manager-boundary', 'manager-crash'])
+      const scriptedScenarios = new Set([
+        'manager-happy', 'manager-boundary', 'manager-crash',
+        'collab-pipeline', 'collab-parallel', 'collab-followup', 'collab-interrupt',
+      ])
       const turnRunner: AgentTurnRunner = e2eScenario && scriptedScenarios.has(e2eScenario)
           ? new ScriptedAgentTurnRunner(
-            e2eScenario as 'manager-happy' | 'manager-boundary' | 'manager-crash',
+            e2eScenario === 'collab-pipeline' || e2eScenario === 'collab-parallel' ||
+              e2eScenario === 'collab-followup' || e2eScenario === 'collab-interrupt'
+              ? 'collab-hang'
+              : e2eScenario as 'manager-happy' | 'manager-boundary' | 'manager-crash',
             async (sessionId) => {
               const run = await roleRepository.getAgentRunByInternalSession(sessionId)
               if (!run) return
@@ -463,6 +688,7 @@ app.whenReady().then(async () => {
           userData,
           roleRepository,
           sessionService,
+          () => managerWorkspaceResolver.configuredOverride() !== undefined,
         ).ensure(settings.providerSelection)
       } catch (err) {
         console.error(
@@ -472,10 +698,15 @@ app.whenReady().then(async () => {
         migrationError ??=
           '小柊这次没有准备好,普通角色和旧会话仍可使用。重启应用会自动重试;若反复出现请反馈。'
       }
+      // 0.4.0 D collab E2E:awaiting run 不被启动恢复吞掉,resume 夹具接管确认链
+      const collabScenarios = new Set(['collab-pipeline', 'collab-parallel', 'collab-followup', 'collab-interrupt'])
+      const preserveAwaiting = e2eScenario === 'manager-happy' ||
+        e2eScenario === 'manager-boundary' ||
+        (e2eScenario !== undefined && collabScenarios.has(e2eScenario))
       try {
-        const recovered = await new AgentRunRecovery(roleRepository, sessionService).reconcileOnStartup({
-          preserveAwaitingApproval: e2eScenario === 'manager-happy' || e2eScenario === 'manager-boundary',
-        })
+      const recovered = await new AgentRunRecovery(roleRepository, sessionService).reconcileOnStartup({
+        preserveAwaitingApproval: preserveAwaiting,
+      })
         if (recovered.interrupted > 0 || recovered.removedOrphans > 0) {
           console.info(`[manager] 启动恢复完成：中断派活 ${recovered.interrupted} 条，清理孤儿内部会话 ${recovered.removedOrphans} 条`)
         }
@@ -485,7 +716,7 @@ app.whenReady().then(async () => {
           redactCommonSecrets(err instanceof Error ? err.message : String(err)),
         )
       }
-      if (e2eScenario === 'manager-happy' || e2eScenario === 'manager-boundary') {
+      if (preserveAwaiting) {
         e2eAwaitingRunIds = (await roleRepository.listAgentRuns())
           .filter((run) => run.status === 'awaiting-approval')
           .map((run) => run.runId)
@@ -507,6 +738,11 @@ app.whenReady().then(async () => {
   })
   registerCredentialHandlers(credentialStore, connectivityService)
   registerSettingsHandlers(settingsStore)
+  // 0.4.0 A(A-14):总管工作区迁移(选择器授权票据+全量拷贝+校验,防绕过/防半迁移)
+  registerManagerWorkspaceHandlers({
+    migration: new ManagerWorkspaceMigrationService(managerWorkspaceResolver, settingsStore),
+    workspaceAuth,
+  })
   registerSessionHandlers(sessionService, agentService, approvalBroker, managerCleanup)
   if (roleService) {
     registerRoleHandlers({
@@ -519,7 +755,13 @@ app.whenReady().then(async () => {
   }
   registerWorkspaceHandlers(workspaceAuth, sessionService)
   registerMessageHandlers(agentService, settingsStore, approvalBroker, credentialStore, sessionService)
-  registerAgentRunHandlers(agentRunQuery)
+  registerAgentRunHandlers(agentRunQuery, {
+    roles: roleRepository ?? undefined,
+    agent: agentService,
+    broker: approvalBroker,
+    emitEvent: emitAgentEvent,
+    onRunInterrupted: () => managerOrchestratorRef?.notifySchedule(),
+  })
   registerApprovalHandlers(approvalBroker)
   registerWindowHandlers()
   registerMemoryHandlers(memoryStore)

@@ -2,6 +2,7 @@ import type { AgentMessage, Entry } from '@earendil-works/pi-agent-core'
 import { contentText } from '@earendil-works/pi-ai'
 import type { TextContent, ThinkingContent, ToolCall } from '@earendil-works/pi-ai'
 import type { ChatMessage, ToolExecutionInfo } from '../../shared/domain/message'
+import type { CommandResultDetails } from '../../shared/domain/command'
 
 /**
  * 消息映射(M3-04):
@@ -20,11 +21,17 @@ type AssistantContent = readonly (TextContent | ThinkingContent | ToolCall)[]
 export function entriesToChatMessages(entries: readonly Entry[]): ChatMessage[] {
   // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(复审阻断项)
   const erroredCalls = new Map<string, string>()
+  // run_command 终值详情(0.4.0 C):从 toolResult.details 恢复 CommandBlock 数据源
+  const commandDetails = new Map<string, CommandResultDetails>()
   for (const entry of entries) {
     if (!isMessageEntry(entry)) continue
     const m = entry.message
     if (m.role === 'toolResult' && m.isError) {
       erroredCalls.set(m.toolCallId, contentText(m.content))
+    }
+    if (m.role === 'toolResult' && m.toolName === 'run_command') {
+      const details = asCommandResultDetails(m.details)
+      if (details !== undefined) commandDetails.set(m.toolCallId, details)
     }
   }
   const result: ChatMessage[] = []
@@ -53,7 +60,7 @@ export function entriesToChatMessages(entries: readonly Entry[]): ChatMessage[] 
         })
         continue
       }
-      const toolExecutions = toolCallsOf(m.content, erroredCalls)
+      const toolExecutions = toolCallsOf(m.content, erroredCalls, commandDetails)
       const thinking = thinkingText(m.content)
       result.push({
         kind: 'chat',
@@ -91,6 +98,7 @@ function thinkingText(content: AssistantContent): string {
 function toolCallsOf(
   content: AssistantContent,
   erroredCalls: ReadonlyMap<string, string>,
+  commandDetails: ReadonlyMap<string, CommandResultDetails>,
 ): ToolExecutionInfo[] {
   return content
     .filter((p): p is ToolCall => p.type === 'toolCall')
@@ -98,6 +106,7 @@ function toolCallsOf(
       const errText = erroredCalls.get(tc.id)
       const rejected =
         errText !== undefined && (errText.includes('拒绝') || errText.includes('没有批准') || errText.includes('未执行'))
+      const command = commandDetails.get(tc.id)
       return {
         toolCallId: tc.id,
         toolName: tc.name,
@@ -107,8 +116,23 @@ function toolCallsOf(
             ? { status: 'rejected' as const }
             : { status: 'failed' as const, error: errText.slice(0, 120) }
           : { status: 'succeeded' as const }),
+        ...(command !== undefined ? { command } : {}),
       }
     })
+}
+
+/** toolResult.details 形状守卫:pi 的 details 是 any,坏数据宁可丢弃也不崩渲染(fail-quiet 降级为普通工具行)。 */
+function asCommandResultDetails(raw: unknown): CommandResultDetails | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const d = raw as Record<string, unknown>
+  if (typeof d.command !== 'string' || typeof d.cwd !== 'string') return undefined
+  if (typeof d.durationMs !== 'number' || !Number.isFinite(d.durationMs)) return undefined
+  if (typeof d.timedOut !== 'boolean' || typeof d.cancelled !== 'boolean') return undefined
+  if (d.exitCode !== null && typeof d.exitCode !== 'number') return undefined
+  if (d.exitCode !== null && !Number.isFinite(d.exitCode)) return undefined
+  if (typeof d.stdout !== 'string' || typeof d.stderr !== 'string') return undefined
+  if (typeof d.stdoutTruncated !== 'boolean' || typeof d.stderrTruncated !== 'boolean') return undefined
+  return raw as CommandResultDetails
 }
 
 /** 工具中文名(与 M4 tool-registry 的注册名保持一致)。 */

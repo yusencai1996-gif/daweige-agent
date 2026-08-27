@@ -18,20 +18,29 @@ import { SYSTEM_MANAGER_ROLE_ID } from '../../../src/shared/domain/manager'
 import type { AgentPushEvent } from '../../../src/shared/ipc/events'
 
 class FakeAgentTurnRunner implements AgentTurnRunner {
-  private settle: ((result: AgentTurnResult) => void) | undefined
+  /** 按 session 定向 settle(并行多条派活时可以只完成指定的那条)。 */
+  private readonly settles = new Map<string, (result: AgentTurnResult) => void>()
   readonly started: AgentTurnInput[] = []
+  readonly steered: Array<{ sessionId: string; text: string }> = []
 
   run(input: AgentTurnInput): Promise<AgentTurnResult> {
     this.started.push(input)
-    return new Promise((resolve) => { this.settle = resolve })
+    return new Promise((resolve) => {
+      this.settles.set(input.sessionId, resolve)
+    })
   }
 
-  complete(finalText: string): void {
-    const sessionId = this.started.at(-1)?.sessionId ?? 'internal'
-    this.settle?.({ sessionId, status: 'completed', finalText })
+  complete(finalText: string, sessionId?: string): void {
+    const key = sessionId ?? this.started.at(-1)?.sessionId ?? 'internal'
+    this.settles.get(key)?.({ sessionId: key, status: 'completed', finalText })
+    this.settles.delete(key)
   }
 
   abortSession(): void {}
+
+  async steerSession(sessionId: string, text: string): Promise<void> {
+    this.steered.push({ sessionId, text })
+  }
 }
 
 let dir: string
@@ -43,6 +52,7 @@ let usage: UsageStore
 let broker: ApprovalBroker
 let runner: FakeAgentTurnRunner
 let orchestrator: ManagerOrchestrator
+let query: AgentRunQueryService
 let events: AgentPushEvent[]
 
 const input = () => ({
@@ -59,6 +69,8 @@ beforeEach(async () => {
   workspace = join(dir, 'workspace')
   const { mkdirSync } = await import('node:fs')
   mkdirSync(workspace)
+  // appData 与工作区必须互不包含(生产两者分离;父目录会让授权根内的产物全落 app-internal 区)
+  mkdirSync(join(dir, 'appdata'))
   roles = new RoleRepository(join(dir, 'roles.sqlite'))
   sessionsRepo = new SessionRepository(join(dir, 'sessions.sqlite'))
   await sessionsRepo.init()
@@ -107,7 +119,7 @@ beforeEach(async () => {
   events = []
   broker = new ApprovalBroker((event) => events.push(event))
   runner = new FakeAgentTurnRunner()
-  const query = new AgentRunQueryService(
+  query = new AgentRunQueryService(
     roles,
     sessions,
     { restoreChatMessages: vi.fn(async () => []) } as never,
@@ -119,7 +131,7 @@ beforeEach(async () => {
     approvals: broker,
     worker: new WorkerRunner(runner),
     query,
-    userDataPath: dir,
+    userDataPath: join(dir, 'appdata'),
     selection: async () => ({ providerId: 'kimi-coding', modelId: 'kimi-for-coding' }),
     emitEvent: (event) => events.push(event),
     isPackaged: false,
@@ -158,13 +170,12 @@ describe('ManagerOrchestrator 派活主链', () => {
 
     runner.complete('没有结构化结果块，但保留为保守 fallback')
     await eventually(async () => (await roles.getAgentRun(running.runId))?.status === 'completed')
-    const waited = await orchestrator.wait('manager-session', running.runId) as {
-      result: { summary: string; unmetCriteria: string[] }
-      usage: { totalTokens: number }
+    const waited = await orchestrator.wait('manager-session', [running.runId]) as {
+      runs: Array<{ result?: { summary: string; unmetCriteria: string[] }; usage: { totalTokens: number } }>
     }
-    expect(waited.result.summary).toContain('保守 fallback')
-    expect(waited.result.unmetCriteria).toEqual(['结构清楚'])
-    expect(waited.usage.totalTokens).toBe(0)
+    expect(waited.runs[0]!.result!.summary).toContain('保守 fallback')
+    expect(waited.runs[0]!.result!.unmetCriteria).toEqual(['结构清楚'])
+    expect(waited.runs[0]!.usage.totalTokens).toBe(0)
   })
 
   it('拒绝派活进入 rejected 并释放串行槽', async () => {
@@ -256,18 +267,18 @@ describe('ManagerOrchestrator 派活主链', () => {
     const run = (await roles.listAgentRuns())[0]!
     vi.useFakeTimers()
     try {
-      const firstWait = orchestrator.wait('manager-session', run.runId, 1)
+      const firstWait = orchestrator.wait('manager-session', [run.runId], 1)
       await vi.advanceTimersByTimeAsync(10_000)
       await expect(firstWait).resolves.toMatchObject({ timedOut: true })
     } finally {
       vi.useRealTimers()
     }
-    const secondWait = orchestrator.wait('manager-session', run.runId, 10_000)
+    const secondWait = orchestrator.wait('manager-session', [run.runId], 10_000)
     await eventually(async () => (await roles.getAgentRun(run.runId))?.waitingReason === 'manager-wait')
     runner.complete('<daweige-delegation-result version="1">\n{"summary":"二次等待拿到结果","conclusions":[],"artifactPaths":[],"unmetCriteria":[]}\n</daweige-delegation-result>')
     await expect(secondWait).resolves.toMatchObject({
       timedOut: false,
-      result: { summary: '二次等待拿到结果' },
+      runs: [{ runId: run.runId, status: 'completed', result: { summary: '二次等待拿到结果' } }],
     })
   })
 
@@ -288,10 +299,9 @@ describe('ManagerOrchestrator 派活主链', () => {
       return originalTransition(runId, transition)
     })
 
-    await expect(orchestrator.wait('manager-session', run.runId)).resolves.toMatchObject({
+    await expect(orchestrator.wait('manager-session', [run.runId])).resolves.toMatchObject({
       timedOut: false,
-      currentStatus: 'completed',
-      result: { summary: '竞态完成' },
+      runs: [{ runId: run.runId, status: 'completed', result: { summary: '竞态完成' } }],
     })
   })
 
@@ -304,9 +314,9 @@ describe('ManagerOrchestrator 派活主链', () => {
       envelope: input(),
     })
     await roles.transitionAgentRun('run-0000000000000009', { status: 'queued' })
-    await expect(orchestrator.wait('manager-session', 'run-0000000000000009')).resolves.toMatchObject({
+    await expect(orchestrator.wait('manager-session', ['run-0000000000000009'])).resolves.toMatchObject({
       timedOut: true,
-      currentStatus: 'queued',
+      runs: [{ runId: 'run-0000000000000009', status: 'queued' }],
     })
   })
 
@@ -322,7 +332,7 @@ describe('ManagerOrchestrator 派活主链', () => {
       sessions,
       { restoreChatMessages: vi.fn(async () => []) } as never,
       usage,
-    ).getDetail(run.runId)
+    ).getDetail(run.runId, 'manager-session')
     expect(detail.childSession).not.toBeNull()
     expect(detail.childSession?.summary.id).toBe(run.internalSessionId)
   })
@@ -338,6 +348,324 @@ describe('ManagerOrchestrator 派活主链', () => {
       if (previous === undefined) delete process.env.DAWEIGE_E2E_SCENARIO
       else process.env.DAWEIGE_E2E_SCENARIO = previous
     }
+  })
+
+  it('并行调度:不同根的两条派活同时 running;同根第二条排队,首条完成后自动补位(复审整改)', async () => {
+    // 第二个 worker 挂互不重叠的根(并行判定看 canonical roots,不看角色)
+    const mkdirSync = (await import('node:fs')).mkdirSync
+    const otherWorkspace = join(dir, 'workspace-other')
+    mkdirSync(otherWorkspace)
+    await roles.insertRole({
+      role: {
+        id: 'agent-b2c3d4e5f6a7',
+        kind: 'worker',
+        displayName: '账房',
+        templateId: 'accountant',
+        homeRelPath: 'daweige/agents/agent-b2c3d4e5f6a7',
+        guardrailsRelPath: 'guardrails.md',
+        createdAt: 3,
+        updatedAt: 3,
+      },
+      mounts: [{
+        workspacePath: otherWorkspace,
+        canonicalKey: await canonicalWorkspaceKey(otherWorkspace),
+        ordinal: 0,
+        isPrimary: true,
+        availability: 'available',
+      }],
+    })
+
+    // 两条互不重叠根的派活:批准后都直接 running(并发上限 3 内)
+    const first = orchestrator.spawn('manager-session', input())
+    const firstApproval = await nextDelegationApproval()
+    broker.resolve({ approvalId: firstApproval.request.id, decision: 'approve' })
+    await expect(first).resolves.toMatchObject({ status: 'running' })
+
+    const second = orchestrator.spawn('manager-session', {
+      ...input(),
+      targetRoleId: 'agent-b2c3d4e5f6a7',
+      allowedWorkspacePaths: [otherWorkspace],
+    })
+    const secondApproval = await nextDelegationApproval(2)
+    broker.resolve({ approvalId: secondApproval.request.id, decision: 'approve' })
+    await expect(second).resolves.toMatchObject({ status: 'running' })
+
+    // 同根第三条:租约互斥 → queued(workspace-lock),拿到人话排队原因
+    const third = orchestrator.spawn('manager-session', input())
+    const thirdApproval = await nextDelegationApproval(3)
+    broker.resolve({ approvalId: thirdApproval.request.id, decision: 'approve' })
+    await expect(third).resolves.toMatchObject({
+      status: 'queued',
+      message: expect.stringContaining('排队'),
+    })
+    const thirdRun = (await roles.listAgentRuns()).find((run) => run.status === 'queued')!
+    expect(thirdRun.queueReason).toBe('workspace-lock')
+
+    // 首条完成(释放租约)→ 调度器自动启动排队的第三条(此前永久 queued 的复验残留场景)
+    runner.complete(
+      '<daweige-delegation-result version="1">\n{"summary":"第一条完成","conclusions":[],"artifactPaths":[],"unmetCriteria":[]}\n</daweige-delegation-result>',
+      runner.started[0]!.sessionId,
+    )
+    await eventually(async () => (await roles.getAgentRun(thirdRun.runId))?.status === 'running')
+    expect(runner.started.length).toBe(3)
+  })
+
+  it('send_message 交棒:完成 run 的 DB 定论进下游信封,handoff 边/input 落库,新卡照弹(PLAN §6.3)', async () => {
+    // 第二个 worker(交棒下游)
+    const mkdirSync = (await import('node:fs')).mkdirSync
+    const otherWorkspace = join(dir, 'workspace-other')
+    mkdirSync(otherWorkspace)
+    await roles.insertRole({
+      role: {
+        id: 'agent-b2c3d4e5f6a7',
+        kind: 'worker',
+        displayName: '账房',
+        templateId: 'accountant',
+        homeRelPath: 'daweige/agents/agent-b2c3d4e5f6a7',
+        guardrailsRelPath: 'guardrails.md',
+        createdAt: 3,
+        updatedAt: 3,
+      },
+      mounts: [{
+        workspacePath: otherWorkspace,
+        canonicalKey: await canonicalWorkspaceKey(otherWorkspace),
+        ordinal: 0,
+        isPrimary: true,
+        availability: 'available',
+      }],
+    })
+
+    // 第一棒:派给小编 → 完成(带结构化定论;artifact 必须在授权根内,越界声明会被结果校验剔除)
+    const { writeFileSync } = await import('node:fs')
+    const artifactPath = join(workspace, 'summary.md')
+    writeFileSync(artifactPath, '门店销售总计 20370')
+    const first = orchestrator.spawn('manager-session', input())
+    const firstApproval = await nextDelegationApproval()
+    broker.resolve({ approvalId: firstApproval.request.id, decision: 'approve' })
+    await expect(first).resolves.toMatchObject({ status: 'running' })
+    const firstRun = (await roles.listAgentRuns()).find((run) => run.status === 'running')!
+    runner.complete(
+      `<daweige-delegation-result version="1">\n{"summary":"账目已汇总","conclusions":["门店销售总计 20370"],"artifactPaths":["${artifactPath.replace(/\\/g, '\\\\')}"],"unmetCriteria":[],"detailData":"城中店 7850;东门店 6700;南山店 5820"}\n</daweige-delegation-result>`,
+      firstRun.internalSessionId!,
+    )
+    await eventually(async () => (await roles.getAgentRun(firstRun.runId))?.status === 'completed')
+    expect((await roles.getAgentRun(firstRun.runId))?.result?.artifactPaths).toEqual([artifactPath])
+    expect((await roles.getAgentRun(firstRun.runId))?.result?.detailData).toBe('城中店 7850;东门店 6700;南山店 5820')
+
+    // 交棒:账房(已完成)→ 小编…不,下游是新 worker(这里用账房角色作为下游演示即可,角色不同才真实)
+    const handoff = orchestrator.sendMessage('manager-session', {
+      sourceRunIds: [firstRun.runId],
+      targetRoleId: 'agent-b2c3d4e5f6a7',
+      managerConclusion: '以汇总数据为准写通报',
+      taskBrief: '把账房汇总写成一篇门店通报',
+      acceptanceCriteria: ['数字与汇总一致'],
+      allowedWorkspacePaths: [otherWorkspace],
+    })
+    const handoffApproval = await nextDelegationApproval(2)
+    broker.resolve({ approvalId: handoffApproval.request.id, decision: 'approve' })
+    await expect(handoff).resolves.toMatchObject({ status: 'running' })
+
+    const runs = await roles.listAgentRuns()
+    const second = runs.find((run) => run.parentRunId === firstRun.runId)!
+    expect(second).toBeTruthy()
+    // 下游信封:DB 权威事实全集(summary+定论+数据明细+产物+manager 结论;阶段复审整改+A-19)
+    expect(second.envelope.managerConclusions).toEqual([
+      '「小编」的结果摘要:账目已汇总',
+      '「小编」的定论:门店销售总计 20370',
+      '「小编」的数据明细(下游核对用,原件不可读):城中店 7850;东门店 6700;南山店 5820',
+      `上游已验证产物(可读引用;能否写入以你的允许文件夹为准):${artifactPath}`,
+      '小柊的交棒结论:以汇总数据为准写通报',
+    ])
+    expect(second.envelope.userRequest).toBe(firstRun.envelope.userRequest)
+    // 同 graph+parent+依赖
+    expect(second.graphId).toBe(firstRun.graphId)
+    expect(second.dependsOnRunIds).toEqual([firstRun.runId])
+    // handoff 边+input 落库(留档)
+    const { edges } = await roles.getAgentRunGraph(firstRun.graphId)
+    expect(edges).toContainEqual({ from: firstRun.runId, to: second.runId, kind: 'handoff' })
+    const inputs = await roles.listUndeliveredAgentRunInputs(second.runId)
+    expect(inputs.some((item) => item.kind === 'handoff')).toBe(true)
+  })
+
+  it('send_message 拒绝:来源未完成不能交棒', async () => {
+    const first = orchestrator.spawn('manager-session', input())
+    const firstApproval = await nextDelegationApproval()
+    broker.resolve({ approvalId: firstApproval.request.id, decision: 'approve' })
+    await first
+    const running = (await roles.listAgentRuns()).find((run) => run.status === 'running')!
+    await expect(
+      orchestrator.sendMessage('manager-session', {
+        sourceRunIds: [running.runId],
+        targetRoleId: 'agent-a1b2c3d4e5f6',
+        managerConclusion: '还没完成就想交',
+        taskBrief: '不该到这',
+        acceptanceCriteria: ['不该到这'],
+        allowedWorkspacePaths: [workspace],
+      }),
+    ).rejects.toThrow('还没完成')
+  })
+
+  it('send_message 拒绝:来源跨协作链(初审测试空白补)', async () => {
+    // 两条独立链各一条 completed run(不带 graphId 各自成链)
+    const first = await roles.createAgentRun({
+      runId: 'run-1111111111111111',
+      managerSessionId: 'manager-session',
+      targetRoleId: 'agent-a1b2c3d4e5f6',
+      targetRoleNameSnapshot: '小编',
+      envelope: input(),
+    })
+    const second = await roles.createAgentRun({
+      runId: 'run-2222222222222222',
+      managerSessionId: 'manager-session',
+      targetRoleId: 'agent-a1b2c3d4e5f6',
+      targetRoleNameSnapshot: '小编',
+      envelope: input(),
+    })
+    expect(first.graphId).not.toBe(second.graphId)
+    for (const runId of [first.runId, second.runId]) {
+      await roles.transitionAgentRun(runId, { status: 'queued' })
+      await roles.transitionAgentRun(runId, { status: 'running', internalSessionId: `internal-${runId}` })
+      await roles.transitionAgentRun(runId, {
+        status: 'completed',
+        result: {
+          summary: '完成',
+          conclusions: ['定论'],
+          artifactPaths: [],
+          unmetCriteria: [],
+          boundaryViolations: [],
+        },
+      })
+    }
+    await expect(
+      orchestrator.sendMessage('manager-session', {
+        sourceRunIds: [first.runId, second.runId],
+        targetRoleId: 'agent-a1b2c3d4e5f6',
+        managerConclusion: '跨链交',
+        taskBrief: '不该到这',
+        acceptanceCriteria: ['不该到这'],
+        allowedWorkspacePaths: [workspace],
+      }),
+    ).rejects.toThrow('同一条协作链')
+  })
+
+  it('getDetail ownership:两个都合法的 manager 会话,run 只归其一(复审整改复验)', async () => {
+    await seedAwaitingLikeRun()
+    // 第二个真实绑定的 manager 会话(合法,但 run 不归它)
+    await roles.bindSession({
+      sessionId: 'manager-session-b',
+      roleId: SYSTEM_MANAGER_ROLE_ID,
+      workspacePathSnapshot: dir,
+      archivedAt: null,
+      visibility: 'user',
+      source: 'created',
+      boundAt: 9,
+    })
+    await expect(query.getDetail('run-0000000000000009', 'manager-session-b')).rejects.toMatchObject({
+      name: 'AgentRunOwnershipError',
+    })
+    // 归属会话正常取
+    await expect(query.getDetail('run-0000000000000009', 'manager-session')).resolves.toMatchObject({
+      run: { runId: 'run-0000000000000009' },
+    })
+  })
+
+  it('打断 awaiting-approval run:未决派活确认卡立即收敛为拒绝,不挂到超时(阶段复审整改)', async () => {
+    // spawn 挂起等确认;此刻打断 awaiting run
+    const spawning = orchestrator.spawn('manager-session', input())
+    const approval = await nextDelegationApproval()
+    expect(approval.request.kind).toBe('delegation')
+    await expect(
+      orchestrator.interruptAgent('manager-session', (approval.request as { runId: string }).runId),
+    ).resolves.toMatchObject({ status: 'interrupted', interruptSource: 'manager' })
+    // spawn 的确认 Promise 被 abortDelegationForRun 按 reject 收敛
+    await expect(spawning).resolves.toMatchObject({ status: 'rejected' })
+    // broker 不再有该 run 的未决卡
+    expect(broker.hasPendingForSession('manager-session')).toBe(false)
+  })
+
+  it('interrupt_agent 对 queued 态 run 也生效(排队中直接收 interrupted,初审测试空白补)', async () => {
+    await roles.createAgentRun({
+      runId: 'run-0000000000000009',
+      managerSessionId: 'manager-session',
+      targetRoleId: 'agent-a1b2c3d4e5f6',
+      targetRoleNameSnapshot: '小编',
+      envelope: input(),
+    })
+    await roles.transitionAgentRun('run-0000000000000009', { status: 'queued' })
+    await expect(
+      orchestrator.interruptAgent('manager-session', 'run-0000000000000009'),
+    ).resolves.toMatchObject({ status: 'interrupted', interruptSource: 'manager' })
+    expect((await roles.getAgentRun('run-0000000000000009'))?.status).toBe('interrupted')
+  })
+
+  it('followup:干活中的 run 收到补充,同 internal 会话 steering 投递,计数+1 且推送(PLAN §6.5)', async () => {
+    const spawning = orchestrator.spawn('manager-session', input())
+    const approval = await nextDelegationApproval()
+    broker.resolve({ approvalId: approval.request.id, decision: 'approve' })
+    await spawning
+    const run = (await roles.listAgentRuns()).find((row) => row.status === 'running')!
+
+    const outcome = await orchestrator.followupTask('manager-session', {
+      runId: run.runId,
+      message: '顺便把汇总表也核对一遍',
+    })
+    expect(outcome.followupCount).toBe(1)
+    // 投递进同一个 internal 会话,内容带安全边界说明
+    expect(runner.steered).toHaveLength(1)
+    expect(runner.steered[0]!.sessionId).toBe(run.internalSessionId)
+    expect(runner.steered[0]!.text).toContain('顺便把汇总表也核对一遍')
+    expect(runner.steered[0]!.text).toContain('不改变你的允许文件夹')
+    // followup_count 落库+input 留档
+    expect((await roles.getAgentRun(run.runId))?.followupCount).toBe(1)
+    const inputs = await roles.listUndeliveredAgentRunInputs(run.runId)
+    expect(inputs.filter((item) => item.kind === 'followup')).toHaveLength(1)
+
+    // 终态后拒绝追加
+    runner.complete('<daweige-delegation-result version="1">\n{"summary":"完成","conclusions":[],"artifactPaths":[],"unmetCriteria":[]}\n</daweige-delegation-result>', run.internalSessionId!)
+    await eventually(async () => (await roles.getAgentRun(run.runId))?.status === 'completed')
+    await expect(
+      orchestrator.followupTask('manager-session', { runId: run.runId, message: '结束了还想补' }),
+    ).rejects.toThrow('已经结束')
+  })
+
+  it('followup 拒绝:排队中的 run 不投递(等开始后再补)', async () => {
+    await roles.createAgentRun({
+      runId: 'run-0000000000000009',
+      managerSessionId: 'manager-session',
+      targetRoleId: 'agent-a1b2c3d4e5f6',
+      targetRoleNameSnapshot: '小编',
+      envelope: input(),
+    })
+    await roles.transitionAgentRun('run-0000000000000009', { status: 'queued' })
+    await expect(
+      orchestrator.followupTask('manager-session', {
+        runId: 'run-0000000000000009',
+        message: '还没开始',
+      }),
+    ).rejects.toThrow('还没开始干活')
+  })
+
+  it('interrupt_agent:干活中的 run 收 interrupted(manager),abort 会话+拒未决卡,幂等重入(PLAN §6.6)', async () => {
+    const spawning = orchestrator.spawn('manager-session', input())
+    const approval = await nextDelegationApproval()
+    broker.resolve({ approvalId: approval.request.id, decision: 'approve' })
+    await spawning
+    const run = (await roles.listAgentRuns()).find((row) => row.status === 'running')!
+
+    const outcome = await orchestrator.interruptAgent('manager-session', run.runId)
+    expect(outcome).toMatchObject({ runId: run.runId, status: 'interrupted', interruptSource: 'manager' })
+    const interrupted = await roles.getAgentRun(run.runId)
+    expect(interrupted?.status).toBe('interrupted')
+    expect(interrupted?.interruptSource).toBe('manager')
+    expect(interrupted?.failureMessage).toContain('总管打断')
+    // 租约已同事务释放
+    expect(await roles.findLeaseConflicts([workspace], 'run-none')).toEqual([])
+    // 已终态:幂等返回
+    await expect(orchestrator.interruptAgent('manager-session', run.runId)).resolves.toMatchObject({
+      alreadyFinished: true,
+    })
+    // 别的 manager 会话不能打断
+    await expect(orchestrator.interruptAgent('other-session', run.runId)).rejects.toThrow('不属于当前总管会话')
   })
 })
 
@@ -368,6 +696,18 @@ describe('启动恢复与孤儿补偿', () => {
     expect(await sessions.findMeta(orphan.summary.id)).toBeUndefined()
   })
 })
+
+
+/** 直写 awaiting run(getDetail ownership 测试用,不经审批链)。 */
+async function seedAwaitingLikeRun(): Promise<void> {
+  await roles.createAgentRun({
+    runId: 'run-0000000000000009',
+    managerSessionId: 'manager-session',
+    targetRoleId: 'agent-a1b2c3d4e5f6',
+    targetRoleNameSnapshot: '小编',
+    envelope: input(),
+  })
+}
 
 async function nextDelegationApproval(expectedCount = 1) {
   await eventually(() => events.filter((event) => event.type === 'approval_required' && event.request.kind === 'delegation').length >= expectedCount)

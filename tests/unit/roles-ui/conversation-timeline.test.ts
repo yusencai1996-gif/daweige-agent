@@ -21,6 +21,11 @@ function run(partial: Partial<AgentRunSummary> & { readonly runId: string }): Ag
     parentRunId: null,
     status: 'completed',
     waitingReason: null,
+    graphId: 'graph-0123456789abcdef',
+    dependsOnRunIds: [],
+    queueReason: null,
+    followupCount: 0,
+    interruptSource: null,
     taskBrief: partial.runId,
     allowedWorkspacePaths: [],
     usage: {

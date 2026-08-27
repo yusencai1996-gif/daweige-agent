@@ -155,6 +155,8 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               onTestCredential={controller.testCredential}
               selection={controller.settings.providerSelection}
               onSelectProvider={(sel) => void controller.selectProvider(sel)}
+              enabledModels={controller.settings.enabledModels ?? []}
+              onToggleEnabledModel={(item) => void controller.toggleEnabledModel(item)}
               appVersion={controller.bootstrap.appVersion}
               updateState={controller.updateState}
               onCheckUpdate={() => void controller.checkUpdate()}
@@ -191,7 +193,10 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               run={controller.runDetailView.run}
               detail={controller.runDetailView.detail}
               detailLoading={controller.runDetailView.loading}
+              graph={controller.runDetailView.graph}
+              graphLoading={controller.runDetailView.graphLoading}
               delegation={controller.delegation}
+              onOpenRun={controller.openAgentRunDetail}
               onBack={controller.closeAgentRunDetail}
             />
           ) : (
@@ -207,6 +212,7 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               roleName={controller.activeRoleName}
               streamingMessageId={controller.streamingMessageId}
               approvals={controller.approvals}
+              commandLive={controller.commandLive}
               streaming={controller.streaming}
               sending={controller.sending}
               chatError={controller.chatError}
@@ -215,6 +221,7 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               onDraftChange={(text) => controller.setDraft(controller.activeSessionId, text)}
               providers={controller.bootstrap.providers}
               selection={controller.settings.providerSelection}
+              enabledModels={controller.settings.enabledModels}
               thinkingLevel={controller.settings.thinkingLevel ?? 'off'}
               reminders={controller.reminders}
               onToggleSidebar={() => setSidebarOpen((v) => !v)}

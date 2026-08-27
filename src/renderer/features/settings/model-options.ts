@@ -53,3 +53,33 @@ export function buildModelOptions(
 export function withProviderSelection(settings: Settings, selection: ProviderSelection): Settings {
   return { ...settings, providerSelection: selection }
 }
+
+/** 启用池(常用模型)容量上限;与 IPC schema 的 enabledModels maxItems 对齐。 */
+export const ENABLED_MODELS_MAX = 32
+
+/** 同一个模型的判定:厂商 + 模型 id 都一致才算同一项。 */
+function sameModel(a: ProviderSelection, b: ProviderSelection): boolean {
+  return a.providerId === b.providerId && a.modelId === b.modelId
+}
+
+/**
+ * 切换某模型在启用池中的勾选态:
+ * 已在池中=移出(顺带清掉旧数据可能存在的重复条目);不在=追加。
+ * 池已满(32 项)时返回原 settings 不变——IPC 会拒超限载荷,UI 不发徒劳请求。
+ */
+export function toggleEnabledModel(settings: Settings, item: ProviderSelection): Settings {
+  const current = settings.enabledModels ?? []
+  const rest = current.filter((m) => !sameModel(m, item))
+  if (rest.length !== current.length) return { ...settings, enabledModels: rest }
+  if (rest.length >= ENABLED_MODELS_MAX) return settings
+  return { ...settings, enabledModels: [...rest, item] }
+}
+
+/**
+ * 当前生效的启用池:未设置/为空(老数据)回退为只剩「当前选择」一项,
+ * 对话区模型选择器不至于两手空空。
+ */
+export function effectiveEnabledModels(settings: Settings): readonly ProviderSelection[] {
+  const pool = settings.enabledModels ?? []
+  return pool.length > 0 ? pool : [settings.providerSelection]
+}

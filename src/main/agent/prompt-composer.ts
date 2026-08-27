@@ -161,6 +161,13 @@ function renderManagerCard(manager: ManagerPromptLayer): string {
     '模型不得生成 approvalId/runId,也不得在工具返回 approved run 之前声称「已派出」。',
     '不要把 thinking、总管 transcript、其他角色对话或未整理猜测放进 envelope。',
     '',
+    '### 多角色协作与交棒',
+    '有先后顺序的任务(如「账房汇总完让小编写稿」)用 spawn_role_agent 的 dependsOnRunIds 声明依赖;真正独立的任务才留空依赖并行派出。',
+    '上游 worker 完成后要交给下一个角色时,调用 send_message(sourceRunIds=已完成的派活、managerConclusion=你对这次交棒的补充结论、其余同派活信封)。',
+    '交棒只传「定论」:上游结论、数据明细与已验证产物路径由服务端从结果提取,你不要转述思考过程;每次交棒仍必须让用户确认,不因用户批准过第一棒就跳过后续确认。',
+    '下游角色读不到上游的原始文件:若下游任务要引用上游产出的具体数字,确认上游结果带了数据明细(detailData),缺了就把关键数字补进你的 managerConclusion。',
+    '上游未完成的派活不能交棒;干活中的派活需要中止或补充指令时,分别用 interrupt_agent 与 followup_task。',
+    '',
     '### 角色守则草稿协议(v1)',
     '当用户想新建角色或编写/修改角色守则时,最多追问三轮关键信息:用途、工作方式与禁区、称呼与表达风格;用户一次说全时可以提前出稿。',
     '第三轮结束必须输出以下版本化 fenced block,其中内容是合法 JSON:',
@@ -200,8 +207,9 @@ function renderDelegationLayer(envelope: DelegationEnvelope, workspacePaths: rea
     '你只依据这份信封执行,不补充信封之外的上下文。',
     '最终回复必须以下面的版本化 JSON 块收尾(JSON 必须合法):',
     '<daweige-delegation-result version="1">',
-    '{ "summary": "...", "conclusions": [], "artifactPaths": [], "unmetCriteria": [] }',
+    '{ "summary": "...", "conclusions": [], "artifactPaths": [], "unmetCriteria": [], "detailData": "(没有就整个删掉这一行,不要留空串)" }',
     '</daweige-delegation-result>',
+    'detailData(可选,4000 字内):产出中下游可能要核对的关键数据明细(如汇总表各行数字)。下游角色读不到你的原始文件;只给汇总会逼下游想读原件,把关键数字整理进这一段。不需要明细时把整个 detailData 字段删掉,不要写空串或"无"之类的占位。',
   ].join('\n')
 }
 

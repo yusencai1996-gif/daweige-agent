@@ -198,7 +198,7 @@ describe('复审阻断项整改', () => {
     for (const r of targets) {
       expect([...r.displayName].length).toBeLessThanOrEqual(24)
     }
-    // 三个名字互不相同(第三批不得与（2）重复——复核未闭合点)
+    // 三个名字互不相同(第三批不得与（2）重复——复审未闭合点)
     expect(new Set(targets.map((r) => r.displayName)).size).toBe(3)
     const names = targets.map((r) => r.displayName).sort()
     expect(names[1]).toBe('长'.repeat(18) + '（2）')

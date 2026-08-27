@@ -95,3 +95,31 @@ describe('pi 凭据适配层', () => {
     expect(store.getProviderKey('kimi-coding')).toBeUndefined()
   })
 })
+
+describe('表外模型动态构造(A-21,用户 0827 真机实踩)', () => {
+  it('pi 静态表与规格表都没有的新模型(如 glm-5.4-air)按同家族模板构造,协议/baseUrl 继承', () => {
+    const registry = new ProviderRegistry(makeStore())
+    const model = registry.getModel('zai-coding-cn', 'glm-5.4-air')
+    expect(model.id).toBe('glm-5.4-air')
+    // 协议与端点继承自同 provider 已知模型(最长公共前缀模板=glm-5.3)
+    expect(model.api).toBe('openai-completions')
+    expect(model.baseUrl).toBe('https://open.bigmodel.cn/api/coding/paas/v4')
+    // 表外模型上下文取保守兜底(131072),不虚报
+    expect(model.contextWindow).toBe(131072)
+  })
+
+  it('规格表里有记录的表外模型用已知窗口(A-20 扩表后 glm-5.3-flash 官方 1M)', () => {
+    const registry = new ProviderRegistry(makeStore())
+    const model = registry.getModel('zai', 'glm-5.3-flash')
+    expect(model.contextWindow).toBe(1_000_000)
+    expect(registry.getModel('zai', 'glm-5.3').contextWindow).toBe(1_000_000)
+  })
+
+  it('跨家族错配(拿别家/乱写的模型名)仍按未知拒绝,不构造打错端点的模型', () => {
+    const registry = new ProviderRegistry(makeStore())
+    expect(() => registry.getModel('kimi-coding', 'whatever')).toThrow(ProviderUnavailableError)
+    expect(() => registry.getModel('deepseek', 'kimi-for-coding')).toThrow(ProviderUnavailableError)
+    // 已知模型不受兜底路径影响
+    expect(registry.getModel('kimi-coding', 'kimi-for-coding').id).toBe('kimi-for-coding')
+  })
+})
