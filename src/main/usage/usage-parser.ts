@@ -1,4 +1,4 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core'
+import type { AgentMessage, CompactionEntry } from '@earendil-works/pi-agent-core'
 import type { Usage } from '@earendil-works/pi-ai'
 
 /**
@@ -40,11 +40,68 @@ export function parseAssistantUsage(input: {
   if (message.role !== 'assistant') return undefined
   const usage = pickUsage(message)
   if (!usage) return undefined
+  const messageTimestamp =
+    typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)
+      ? message.timestamp
+      : input.occurredAtFallbackMs
+  if (messageTimestamp === undefined) return undefined
 
-  const inputTokens = safeCount(usage.input)
-  const outputTokens = safeCount(usage.output)
-  const cacheReadTokens = safeCount(usage.cacheRead)
-  const cacheWriteTokens = safeCount(usage.cacheWrite)
+  return parseUsageBlock({
+    sourceEntryId,
+    sessionId,
+    usage,
+    provider: typeof message.provider === 'string' ? message.provider : '',
+    modelId: typeof message.model === 'string' ? message.model : '',
+    responseModelId:
+      typeof message.responseModel === 'string' && message.responseModel
+        ? message.responseModel
+        : null,
+    occurredAtMs: messageTimestamp,
+    timeZone,
+    stopReason: typeof message.stopReason === 'string' ? message.stopReason : '',
+  })
+}
+
+/** compaction entry 的 usage 与模型快照解析；坏 details/usage 直接跳过。 */
+export function parseCompactionUsage(input: {
+  sourceEntryId: string
+  sessionId: string
+  entry: CompactionEntry
+  timeZone: string
+}): ParsedUsageEvent | undefined {
+  const { entry } = input
+  if (!entry.usage) return undefined
+  const daweige = compactionModelSnapshot(entry.details)
+  if (!daweige) return undefined
+  return parseUsageBlock({
+    sourceEntryId: input.sourceEntryId,
+    sessionId: input.sessionId,
+    usage: entry.usage,
+    provider: daweige.providerId,
+    modelId: daweige.modelId,
+    responseModelId: null,
+    occurredAtMs: entry.timestamp,
+    timeZone: input.timeZone,
+    stopReason: 'compaction',
+  })
+}
+
+/** assistant/compaction 共用的 usage 数值与归日校验。 */
+export function parseUsageBlock(input: {
+  sourceEntryId: string
+  sessionId: string
+  usage: Usage
+  provider: string
+  modelId: string
+  responseModelId: string | null
+  occurredAtMs: number
+  timeZone: string
+  stopReason: string
+}): ParsedUsageEvent | undefined {
+  const inputTokens = safeCount(input.usage.input)
+  const outputTokens = safeCount(input.usage.output)
+  const cacheReadTokens = safeCount(input.usage.cacheRead)
+  const cacheWriteTokens = safeCount(input.usage.cacheWrite)
   if (
     inputTokens === undefined ||
     outputTokens === undefined ||
@@ -53,35 +110,27 @@ export function parseAssistantUsage(input: {
   ) {
     return undefined
   }
-  const cacheWrite1h = safeCount(usage.cacheWrite1h)
+  const cacheWrite1h = safeCount(input.usage.cacheWrite1h)
 
   // totalTokens 口径以四项之和为准:pi 归一值不一致时按四项重算,不采用上报值;
-  // 和仍须是安全整数(四个安全整数之和可能越界,复审 S-01)
+  // 和仍须是安全整数(四个安全整数之和可能越界,独立复审 S-01)
   const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens
   if (!Number.isSafeInteger(totalTokens)) return undefined
 
-  const messageTimestamp =
-    typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)
-      ? message.timestamp
-      : input.occurredAtFallbackMs
-  if (messageTimestamp === undefined) return undefined
-  // 超出 Date 有效范围的时间戳会让 Intl 归日抛异常,直接拒绝(复审 B-02)
+  const messageTimestamp = input.occurredAtMs
+  if (typeof messageTimestamp !== 'number' || !Number.isFinite(messageTimestamp)) return undefined
+  // 超出 Date 有效范围的时间戳会让 Intl 归日抛异常,直接拒绝(独立复审 B-02)
   if (Math.abs(messageTimestamp) > 8.64e15) return undefined
   const occurredAtMs = messageTimestamp
 
-  const provider = typeof message.provider === 'string' ? message.provider : ''
-  const modelId = typeof message.model === 'string' ? message.model : ''
-  if (!provider || !modelId) return undefined
+  if (!input.provider || !input.modelId) return undefined
 
   return {
-    sourceEntryId,
-    sessionId,
-    provider,
-    modelId,
-    responseModelId:
-      typeof message.responseModel === 'string' && message.responseModel
-        ? message.responseModel
-        : null,
+    sourceEntryId: input.sourceEntryId,
+    sessionId: input.sessionId,
+    provider: input.provider,
+    modelId: input.modelId,
+    responseModelId: input.responseModelId,
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -89,16 +138,20 @@ export function parseAssistantUsage(input: {
     cacheWrite1hTokens: cacheWrite1h ?? null,
     totalTokens,
     occurredAtMs,
-    localDate: localDateFor(occurredAtMs, timeZone),
-    timezoneId: timeZone,
-    stopReason: typeof message.stopReason === 'string' ? message.stopReason : '',
+    localDate: localDateFor(occurredAtMs, input.timeZone),
+    timezoneId: input.timeZone,
+    stopReason: input.stopReason,
   }
 }
 
-/** 会话时间跨度记录(store 层 upsert 输入);来自 user/assistant 任意持久化消息。 */
-export interface MessageSpanInput {
-  readonly sessionId: string
-  readonly atMs: number
+function compactionModelSnapshot(details: unknown): { providerId: string; modelId: string } | undefined {
+  if (typeof details !== 'object' || details === null) return undefined
+  const daweige = (details as { daweige?: unknown }).daweige
+  if (typeof daweige !== 'object' || daweige === null) return undefined
+  const { providerId, modelId } = daweige as { providerId?: unknown; modelId?: unknown }
+  if (typeof providerId !== 'string' || !providerId) return undefined
+  if (typeof modelId !== 'string' || !modelId) return undefined
+  return { providerId, modelId }
 }
 
 function pickUsage(message: { usage?: unknown }): Usage | undefined {

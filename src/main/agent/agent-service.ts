@@ -1,13 +1,20 @@
-import { Agent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
+import {
+  Agent,
+  buildSessionContext,
+  type AgentMessage,
+  type AgentTool,
+} from '@earendil-works/pi-agent-core'
 import type { Session } from '@earendil-works/pi-agent-core'
 import type { SqliteSessionMetadata } from '@earendil-works/pi-session-backend-sqlite-node'
 import type {
   Api,
   AssistantMessageEventStream,
   Context,
+  Message,
   Model,
   SimpleStreamOptions,
   UserMessage,
+  Models,
 } from '@earendil-works/pi-ai'
 import { randomUUID } from 'node:crypto'
 import type { ChatMessage } from '../../shared/domain/message'
@@ -16,7 +23,13 @@ import type { ThinkingLevel } from '../../shared/domain/settings'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 import type { SessionService } from '../storage/session-service'
 import type { UsageRecorder } from '../usage/usage-service'
-import { entriesToAgentMessages, entriesToChatMessages, TOOL_DISPLAY_NAMES } from './message-mapper'
+import { entriesToChatMessages, TOOL_DISPLAY_NAMES } from './message-mapper'
+import {
+  CompactionService,
+  shouldRequestCompaction,
+  type CompactionOutcome,
+  type CompactionRunner,
+} from './compaction-service'
 import { translateConnectivityError } from './connectivity-service'
 import {
   composeSystemPrompt,
@@ -42,6 +55,7 @@ export interface AgentModels {
     context: Context,
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStream
+  completeSimple: Models['completeSimple']
 }
 
 export interface AgentTurnInput {
@@ -104,6 +118,8 @@ export interface AgentServiceDeps {
    * 返回值替代 pi meta.cwd 作为工具写根与系统提示词工作区;未提供时沿用 meta.cwd。
    */
   managerCwdOverride?: (sessionId: string) => Promise<string | undefined>
+  /** 测试可替换压缩执行器；生产缺省为 pi 原生 CompactionService。 */
+  compactionService?: CompactionRunner
 }
 
 class ActiveAgent {
@@ -111,6 +127,12 @@ class ActiveAgent {
   readonly messageIds = new WeakMap<AgentMessage, string>()
   /** 当前流式 assistant 消息 id:partial 副本引用可能变化,fallback 到单槽。 */
   streamingMessageId: string | undefined
+  compactionPending = false
+  compactionPromise: Promise<CompactionOutcome | undefined> | undefined
+  compactionAbortController: AbortController | undefined
+  /** 最近一次压缩失败时间:冷却窗内不再触发,防每轮重试白烧摘要请求(⑤审整改)。 */
+  lastCompactionFailureAt: number | undefined
+  compactionEnabled = false
 
   constructor(
     readonly sessionId: string,
@@ -135,8 +157,16 @@ export class ModelNotReadyError extends Error {
 
 export class AgentService implements AgentTurnRunner {
   private readonly active = new Map<string, ActiveAgent>()
+  private readonly compaction: CompactionRunner
 
-  constructor(private readonly deps: AgentServiceDeps) {}
+  constructor(private readonly deps: AgentServiceDeps) {
+    this.compaction = deps.compactionService ?? new CompactionService({
+      models: deps.models,
+      emitEvent: deps.emitEvent,
+      ...(deps.usageRecorder ? { usageRecorder: deps.usageRecorder } : {}),
+      ...(deps.thinkingLevel ? { thinkingLevel: deps.thinkingLevel } : {}),
+    })
+  }
 
   /**
    * 发送用户消息:立即持久化并返回 ChatMessage(乐观渲染锚点);
@@ -171,20 +201,24 @@ export class AgentService implements AgentTurnRunner {
   }
 
   abortSession(sessionId: string): void {
-    this.active.get(sessionId)?.agent.abort()
+    const active = this.active.get(sessionId)
+    if (!active) return
+    active.agent.abort()
+    active.compactionPending = false
+    active.compactionAbortController?.abort()
   }
 
   /**
    * followup 追加(0.4.0 D,PLAN §6.5):先持久化 user message 到 pi 会话,
    * 再注入 steering 队列——pi 在当前 assistant turn 完成后、下一轮模型调用前消费;
    * 正等工具确认时先等确认 resolve,turn 边界收到补充。不新增会话,usage 继续按本会话归集。
-   * isStreaming 前置检查(阶段复审整改):turn 已结束的会话 steering 队列无人排空,
+   * isStreaming 前置检查(codex 阶段复审整改):turn 已结束的会话 steering 队列无人排空,
    * 消息持久化后只会变成无人消费的死 transcript——趁还没写入就拒绝。
    */
   async steerSession(sessionId: string, text: string): Promise<void> {
     const active = this.active.get(sessionId)
     if (!active) throw new Error('这条派活当前不在干活,补充要求送不进去')
-    if (!active.agent.state.isStreaming) {
+    if (!active.agent.state.isStreaming || active.compactionPromise) {
       throw new Error('这条派活的当前步骤刚好结束了,补充要求没有送进去;请让小柊重新派活')
     }
     const userMessage: UserMessage = { role: 'user', content: text, timestamp: Date.now() }
@@ -194,16 +228,32 @@ export class AgentService implements AgentTurnRunner {
 
   /** 归档/删除前的忙碌检查:该会话是否正在流式回复。 */
   isSessionStreaming(sessionId: string): boolean {
-    return this.active.get(sessionId)?.agent.state.isStreaming ?? false
+    return this.isSessionBusy(sessionId)
+  }
+
+  isSessionBusy(sessionId: string): boolean {
+    const active = this.active.get(sessionId)
+    return Boolean(active?.agent.state.isStreaming || active?.compactionPromise)
   }
 
   /** 会话删除/切换后释放活跃 agent。 */
   disposeAgent(sessionId: string): void {
     const active = this.active.get(sessionId)
     if (active) {
-      active.agent.abort()
+      this.abortSession(sessionId)
       this.active.delete(sessionId)
     }
+  }
+
+  /** 应用退出：取消独立压缩请求并等待其 settle，避免 repository 先关闭。 */
+  async drain(): Promise<void> {
+    const settling: Promise<unknown>[] = []
+    for (const active of this.active.values()) {
+      active.compactionPending = false
+      active.compactionAbortController?.abort()
+      if (active.compactionPromise) settling.push(active.compactionPromise)
+    }
+    await Promise.allSettled(settling)
   }
 
   /** 打开会话时给渲染层的消息列表(复用 agent 恢复逻辑)。 */
@@ -219,6 +269,7 @@ export class AgentService implements AgentTurnRunner {
     const model = this.resolveModel(selection)
     const meta = await session.getMetadata()
     const orchestration = await this.deps.orchestrationPrompt?.(sessionId)
+    const compactionEnabled = await this.deps.sessionService.isUserVisibleSession(sessionId)
     // 0.4.0 A:manager 会话的 effective cwd 跟随 resolver 当前值(迁移后旧会话立即指向新位置)
     const effectiveCwd = (await this.deps.managerCwdOverride?.(sessionId)) ?? meta.cwd
     const [toolchain, memoryNotes, role] = await Promise.all([
@@ -241,7 +292,7 @@ export class AgentService implements AgentTurnRunner {
         }),
         model,
         tools: toolchain?.tools ?? [],
-        messages: entriesToAgentMessages(entries),
+        messages: buildSessionContext(entries).messages,
       },
       streamFn: (m, context, options) => {
         const level = this.deps.thinkingLevel?.()
@@ -252,11 +303,42 @@ export class AgentService implements AgentTurnRunner {
           reasoning ? { ...options, reasoning } : options,
         )
       },
+      // pi 默认 convertToLlm 只放行 user/assistant/toolResult,compactionSummary 会被静默丢弃——
+      // 摘要必须显式转成模型可读的 user 消息,否则压缩后模型只知道尾部、丢失全部早期上下文。
+      convertToLlm: (messages): Message[] =>
+        messages.flatMap((message): readonly AgentMessage[] => {
+          if (message.role === 'compactionSummary') {
+            return [{
+              role: 'user',
+              content: `【更早对话的摘要】\n${message.summary}\n(以上是此前对话的总结,接下来是最近的原始对话记录)`,
+              timestamp: message.timestamp,
+            }]
+          }
+          return [message]
+        }).filter((message): message is Message =>
+          message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult'),
       toolExecution: 'sequential',
       beforeToolCall: toolchain?.beforeToolCall,
     })
 
     const active = new ActiveAgent(sessionId, agent, session, effectiveCwd)
+    active.compactionEnabled = compactionEnabled
+    agent.shouldStopAfterTurn = ({ context }) => {
+      if (!active.compactionEnabled) return false
+      // 压缩失败冷却(⑤审整改):5 分钟内不再触发,防止连续失败时每轮重试白烧摘要请求
+      if (
+        active.lastCompactionFailureAt !== undefined &&
+        Date.now() - active.lastCompactionFailureAt < 5 * 60_000
+      ) {
+        return false
+      }
+      const shouldStop = shouldRequestCompaction(
+        context.messages,
+        active.agent.state.model.contextWindow,
+      )
+      if (shouldStop) active.compactionPending = true
+      return shouldStop
+    }
     this.wireEvents(active)
     this.active.set(sessionId, active)
     return active
@@ -365,10 +447,6 @@ export class AgentService implements AgentTurnRunner {
                   message: event.message,
                 })
               }
-              const at = (event.message as { timestamp?: number }).timestamp
-              if (typeof at === 'number' && Number.isFinite(at)) {
-                this.deps.usageRecorder.recordMessageSpan(sessionId, at)
-              }
             } catch (err) {
               console.error('[agent] usage 记录异常(已忽略):', err)
             }
@@ -445,8 +523,9 @@ export class AgentService implements AgentTurnRunner {
     entryId: string
   }> {
     const existing = this.active.get(input.sessionId)
-    if (existing?.agent.state.isStreaming) throw new AgentBusyError()
+    if (existing && this.isSessionBusy(input.sessionId)) throw new AgentBusyError()
     const active = existing ?? (await this.ensureAgent(input.sessionId, input.selection))
+    if (this.isSessionBusy(input.sessionId)) throw new AgentBusyError()
     this.syncModel(active, input.selection)
     await this.refreshSystemPrompt(active)
     const userMessage: UserMessage = {
@@ -455,11 +534,6 @@ export class AgentService implements AgentTurnRunner {
       timestamp: Date.now(),
     }
     const entryId = await active.session.appendMessage(userMessage)
-    try {
-      this.deps.usageRecorder?.recordMessageSpan(input.sessionId, userMessage.timestamp)
-    } catch (err) {
-      console.error('[agent] usage 跨度记录异常(已忽略):', err)
-    }
     if (input.updateTitle !== false) await this.maybeUpdateTitle(active, input.text)
     return { active, userMessage, entryId }
   }
@@ -471,6 +545,7 @@ export class AgentService implements AgentTurnRunner {
     try {
       // prompt 传已持久化的消息对象,agent 只把它并入 transcript,不重复入库
       await active.agent.prompt([userMessage])
+      await this.finishPendingCompactions(active)
       return {
         sessionId: active.sessionId,
         status: 'completed',
@@ -479,6 +554,25 @@ export class AgentService implements AgentTurnRunner {
     } catch (err) {
       if (isAbortError(err)) {
         return { sessionId: active.sessionId, status: 'aborted', finalText: '' }
+      } else if (err instanceof ContextCompactionError) {
+        // 压缩发生在本轮回复完整落库之后:回复已交付,压缩失败不判整轮 failed(⑤审整改);
+        // 只推一条温和提示,回复照常 completed,冷却窗防止下轮立即重试。
+        const finalText = finalAssistantText(active.agent.state.messages)
+        if (finalText !== '') {
+          this.push({
+            type: 'agent_error',
+            sessionId: active.sessionId,
+            message: '刚才的回复不受影响;不过上下文自动整理没成功,空间快满时新对话可能受限,稍后会自动再试',
+            retryable: true,
+          })
+          return { sessionId: active.sessionId, status: 'completed', finalText }
+        }
+        return {
+          sessionId: active.sessionId,
+          status: 'failed',
+          finalText,
+          errorMessage: '上下文自动整理失败了,本轮没有改动历史;请重试这条任务',
+        }
       } else {
         const message = translateConnectivityError(err, [])
         this.push({ type: 'agent_error', sessionId: active.sessionId, message, retryable: true })
@@ -494,6 +588,46 @@ export class AgentService implements AgentTurnRunner {
     }
   }
 
+  private async finishPendingCompactions(active: ActiveAgent): Promise<void> {
+    while (active.compactionPending) {
+      active.compactionPending = false
+      if (active.compactionPromise) throw new AgentBusyError()
+      const controller = new AbortController()
+      active.compactionAbortController = controller
+      const promise = this.compaction.execute(
+        {
+          sessionId: active.sessionId,
+          session: active.session,
+          model: active.agent.state.model,
+          messages: active.agent.state.messages,
+          replaceMessages: (messages) => {
+            active.agent.state.messages = messages
+          },
+        },
+        controller.signal,
+      )
+      active.compactionPromise = promise
+      let outcome: CompactionOutcome | undefined
+      try {
+        outcome = await promise
+      } catch (error) {
+        if (!isAbortError(error)) active.lastCompactionFailureAt = Date.now()
+        if (isAbortError(error)) throw error
+        throw new ContextCompactionError(error)
+      } finally {
+        if (active.compactionPromise === promise) active.compactionPromise = undefined
+        if (active.compactionAbortController === controller) {
+          active.compactionAbortController = undefined
+        }
+      }
+
+      if (!outcome) throw new ContextCompactionError(new Error('当前上下文无法安全压缩'))
+      if (lastMessageRole(active.agent.state.messages) === 'toolResult') {
+        await active.agent.continue()
+      }
+    }
+  }
+
   private async maybeUpdateTitle(active: ActiveAgent, text: string): Promise<void> {
     const name = await active.session.getName()
     if (name && name !== '新会话') return
@@ -503,6 +637,13 @@ export class AgentService implements AgentTurnRunner {
 
   private push(event: AgentPushEvent): void {
     this.deps.emitEvent(event)
+  }
+}
+
+class ContextCompactionError extends Error {
+  constructor(readonly cause: unknown) {
+    super('上下文自动整理失败')
+    this.name = 'ContextCompactionError'
   }
 }
 
@@ -538,6 +679,10 @@ function lastAssistant(active: ActiveAgent): AgentMessage | undefined {
     if (m && m.role === 'assistant') return m
   }
   return undefined
+}
+
+function lastMessageRole(messages: readonly AgentMessage[]): AgentMessage['role'] | undefined {
+  return messages.at(-1)?.role
 }
 
 /** run_command 运行中的命令摘要(压到 120 字符;完整原文在终值 details.command)。 */

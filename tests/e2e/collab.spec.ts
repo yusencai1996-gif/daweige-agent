@@ -10,6 +10,11 @@ import { canonicalWorkspaceKey } from '../../src/main/roles/role-files'
  * 0.4.0 D 协作链 E2E(PLAN §9.9-6~9):pipeline/parallel/followup/interrupt 四场景。
  * 结构:真实 Electron+真实调度/审批/事件流/DB;模型 faux(manager 会话工具调用)或
  * scripted 挂起 runner(child run 停在 running 态供断言);直写库 seed+resume 夹具。
+ *
+ * 0.5.0 第三批(A-28,PLAN §6.6):四场景断言迁入协作链常驻面板——
+ * 纵向顺序/交棒连接行/并行同层/同 run tab 追加计数/interrupted 节点态;
+ * 另验六条:收起展开三态、派活卡入口 pin 对应节点、720 窄窗(main-pane ≈720)可用、
+ * 不再切整页、普通角色会话无面板、切 manager 会话不串链。
  */
 
 const ZHANGFANG_ROLE = 'agent-a1b2c3d4e5f6'
@@ -113,6 +118,7 @@ async function seedAwaitingRun(
   targetRoleName: string,
   workspace: string,
   taskBrief: string,
+  graphId?: string,
 ): Promise<void> {
   const repo = new RoleRepository(join(seed.userDataDir, 'data', 'roles.sqlite'))
   await repo.createAgentRun({
@@ -120,6 +126,7 @@ async function seedAwaitingRun(
     managerSessionId: seed.managerSessionId,
     targetRoleId,
     targetRoleNameSnapshot: targetRoleName,
+    ...(graphId !== undefined ? { graphId } : {}),
     envelope: {
       userRequest: taskBrief,
       managerConclusions: ['协作链 E2E 预置'],
@@ -131,7 +138,7 @@ async function seedAwaitingRun(
   await repo.drainAndClose()
 }
 
-/** 直写一条 completed run(交棒上游;internal 会话用占位串,不进详情页即无影响)。 */
+/** 直写一条 completed run(交棒上游;internal 会话用占位串,面板 tab 里会如实显示「过程会话缺失」)。 */
 async function seedCompletedRun(
   seed: CollabSeed,
   runId: string,
@@ -170,7 +177,7 @@ type CollabScenario = 'collab-pipeline' | 'collab-parallel' | 'collab-followup' 
 
 async function launchCollab(
   seed: CollabSeed,
-  scenario: CollabScenario,
+  scenario?: CollabScenario,
   extraEnv: Record<string, string> = {},
 ): Promise<{ app: ElectronApplication; win: Page }> {
   const app = await electron.launch({
@@ -178,7 +185,7 @@ async function launchCollab(
     env: {
       ...process.env,
       DAWEIGE_USER_DATA: seed.userDataDir,
-      DAWEIGE_E2E_SCENARIO: scenario,
+      ...(scenario !== undefined ? { DAWEIGE_E2E_SCENARIO: scenario } : {}),
       ...extraEnv,
     },
   })
@@ -228,6 +235,42 @@ test('collab-pipeline:账房定论经小柊交棒小编,handoff 边/信封无过
     // 小编 run 启动(hang runner 停在 running);模型收尾文本落地
     await expect(win.locator('.msg-assistant').last()).toContainText('已交棒', { timeout: 15000 })
 
+    // ---- A-28 面板:活跃链自动展开成面板态;纵向顺序 账房→小编;handoff 连接行 ----
+    const panel = win.locator('.collab-panel')
+    await expect(panel).toHaveClass(/is-panel/, { timeout: 10000 })
+    await expect(panel.locator('.collab-flow-node')).toHaveCount(2, { timeout: 10000 })
+    const flowNames = await panel.locator('.collab-flow-node .collab-flow-name').allTextContents()
+    expect(flowNames).toEqual(['账房', '小编'])
+    // 交棒标识:getGraph 缓存补回 handoff 边后,连接行出「来自:账房(交棒)」
+    await expect(panel.locator('.collab-flow-upstream.is-handoff')).toHaveText('来自:账房(交棒)', {
+      timeout: 10000,
+    })
+    // 顶部汇总:2 节点 · 进行中 1 · 完成 1
+    await expect(panel.locator('.collab-aggregate')).toContainText('2 节点')
+    await expect(panel.locator('.collab-aggregate')).toContainText('进行中 1')
+    await expect(panel.locator('.collab-aggregate')).toContainText('完成 1')
+
+    // ---- A-28 收编:派活卡「查看完整过程」→ 面板详情态并 pin 这张卡的 tab,不再切整页 ----
+    await card.getByRole('button', { name: '查看完整过程' }).click()
+    await expect(panel).toHaveClass(/is-detail/)
+    const tabs = panel.locator('.collab-tab')
+    await expect(tabs).toHaveCount(2)
+    // pin 的是这张卡的 run:小编 tab 选中,过程区是它的完整输出(还在干活)
+    await expect(panel.locator('.collab-tab.is-active')).toContainText('小编')
+    await expect(panel.locator('.run-process-pane')).toContainText('小编正在干活', { timeout: 10000 })
+    // 详情态左栏流程仍在,可点节点切 tab
+    await expect(panel.locator('.collab-flow-pane .collab-flow-node')).toHaveCount(2)
+    // 不再切整页:旧整页详情不存在,对话区没离开(输入框还在)
+    await expect(win.locator('.run-detail-pane')).toHaveCount(0)
+    await expect(textarea).toBeVisible()
+    // tab 切换:点账房 tab(占位 internal 会话,如实显示缺失)
+    await tabs.first().click()
+    await expect(panel.locator('.collab-tab.is-active')).toContainText('账房')
+    await expect(panel.locator('.run-process-pane')).toContainText('过程会话缺失', { timeout: 10000 })
+    // 收起详情回面板态(链还活跃)
+    await panel.locator('.collab-detail-close').click()
+    await expect(panel).toHaveClass(/is-panel/)
+
     // DB 侧:handoff 边+依赖+同 graph;下游信封只有定论,无 thinking/transcript
     const repo = await openRuns(seed)
     try {
@@ -253,9 +296,11 @@ test('collab-pipeline:账房定论经小柊交棒小编,handoff 边/信封无过
 
 test('collab-parallel:不同根双 run 同时 running,同根第三条排队 workspace-lock', async () => {
   const seed = await seedCollabWorkspace()
-  await seedAwaitingRun(seed, 'run-aaaaaaaaaaaaaaaa', ZHANGFANG_ROLE, '账房', seed.wsA, '汇总账房数据')
-  await seedAwaitingRun(seed, 'run-bbbbbbbbbbbbbbbb', XIAOBIAN_ROLE, '小编', seed.wsB, '写小编稿件')
-  await seedAwaitingRun(seed, 'run-cccccccccccccccc', ZHANGFANG_ROLE, '账房', seed.wsA, '复核账房数据')
+  // 三条 run 同 graph(无依赖边 → 面板里是同层并行的三个节点)
+  const graphId = 'graph-aaaabbbbccccdddd'
+  await seedAwaitingRun(seed, 'run-aaaaaaaaaaaaaaaa', ZHANGFANG_ROLE, '账房', seed.wsA, '汇总账房数据', graphId)
+  await seedAwaitingRun(seed, 'run-bbbbbbbbbbbbbbbb', XIAOBIAN_ROLE, '小编', seed.wsB, '写小编稿件', graphId)
+  await seedAwaitingRun(seed, 'run-cccccccccccccccc', ZHANGFANG_ROLE, '账房', seed.wsA, '复核账房数据', graphId)
   const { app, win } = await launchCollab(seed, 'collab-parallel')
   try {
     // 三张确认卡(resume 夹具并发接管);依次批准
@@ -264,6 +309,18 @@ test('collab-parallel:不同根双 run 同时 running,同根第三条排队 work
       await expect(card.getByRole('button', { name: '同意派出' })).toBeVisible({ timeout: 15000 })
       await card.getByRole('button', { name: '同意派出' }).click()
     }
+
+    // ---- A-28 面板:同层并行三节点,两条干活中、一条排队中,互不挤层 ----
+    const panel = win.locator('.collab-panel')
+    await expect(panel).toHaveClass(/is-panel/, { timeout: 10000 })
+    const parallelLayer = panel.locator('.collab-flow-layer.is-parallel')
+    await expect(parallelLayer.locator('.collab-flow-node')).toHaveCount(3, { timeout: 10000 })
+    await expect(parallelLayer.locator('.collab-flow-parallel-tag')).toHaveText('并行')
+    await expect(panel.locator('.collab-flow-state', { hasText: '干活中' })).toHaveCount(2)
+    await expect(panel.locator('.collab-flow-state', { hasText: '排队中' })).toHaveCount(1)
+    // 顶部汇总:3 节点 · 进行中 3(queued 也算进行中口径,与主进程 aggregate 一致)
+    await expect(panel.locator('.collab-aggregate')).toContainText('3 节点')
+
     // 前两条(不同根)并行 running;第三条(同根 ws-a)被租约挡下排队
     await win.waitForTimeout(1500)
     const repo = await openRuns(seed)
@@ -298,12 +355,24 @@ test('collab-followup:running 中经小柊补一句,同 run 计数+1 且 input �
     await card.getByRole('button', { name: '同意派出' }).click()
     await win.waitForTimeout(1000)
 
+    // ---- A-28 面板:详情态开在账房 tab,再发补充——同 run tab 过程原位更新 ----
+    const panel = win.locator('.collab-panel')
+    await expect(panel).toHaveClass(/is-panel/, { timeout: 10000 })
+    await panel.getByRole('button', { name: '查看详情' }).click()
+    await expect(panel).toHaveClass(/is-detail/)
+    await expect(panel.locator('.collab-tab.is-active')).toContainText('账房')
+    await expect(panel.locator('.run-process-pane')).toContainText('账房正在干活', { timeout: 10000 })
+
     await seedFakeKey(win)
     // 用户在小柊会话补一句 → faux 调 followup_task → 工具送达
     const textarea = win.locator('textarea')
     await textarea.fill('补充:顺便核对汇总表')
     await win.getByRole('button', { name: '发送' }).click()
     await expect(win.locator('.msg-assistant').last()).toContainText('补充要求已经送达', { timeout: 15000 })
+
+    // 面板同 run tab 原位更新:过程区 meta 与流程行都出「追加 1 次」(不建新 run、不切 tab)
+    await expect(panel.locator('.run-process-meta')).toContainText('追加 1 次', { timeout: 10000 })
+    await expect(panel.locator('.collab-flow-pane .collab-flow-followup')).toHaveText('追加 1 次')
 
     // DB:同 run(不建新 run),followup_count+1,input 留档
     const repo = await openRuns(seed)
@@ -337,10 +406,22 @@ test('collab-interrupt:running 中行内确认打断,run 收 interrupted(user) �
     await card.getByRole('button', { name: '同意派出' }).click()
     await expect(card.getByRole('button', { name: '打断' })).toBeVisible({ timeout: 10000 })
 
+    // ---- A-28 面板:干活中挂在面板态流程里 ----
+    const panel = win.locator('.collab-panel')
+    await expect(panel).toHaveClass(/is-panel/, { timeout: 10000 })
+    await expect(panel.locator('.collab-flow-state')).toHaveText('干活中')
+
     // 行内两步确认打断
     await card.getByRole('button', { name: '打断' }).click()
     await card.getByRole('button', { name: '确定打断' }).click()
     await expect(card).toContainText('已中断', { timeout: 10000 })
+
+    // ---- A-28 面板:全终态自动收小窗但面板不消失;点开流程看到 interrupted 节点态 ----
+    await expect(panel).toHaveClass(/is-mini/, { timeout: 10000 })
+    await expect(panel.locator('.collab-mini-line')).toHaveText('账房 · 1 节点')
+    await panel.locator('.collab-mini').click()
+    await expect(panel).toHaveClass(/is-panel/)
+    await expect(panel.locator('.collab-flow-state')).toHaveText('已中断')
 
     // DB:interrupted(user)+租约释放
     const repo = await openRuns(seed)
@@ -352,6 +433,127 @@ test('collab-interrupt:running 中行内确认打断,run 收 interrupted(user) �
     } finally {
       await repo.drainAndClose()
     }
+  } finally {
+    await app.close()
+  }
+})
+
+test('A-28 三态:面板→小窗→面板→详情往返;960 窗(main-pane≈720)详情抽屉可用不溢出', async () => {
+  const seed = await seedCollabWorkspace()
+  const runId = 'run-1111111111111111'
+  await seedAwaitingRun(seed, runId, ZHANGFANG_ROLE, '账房', seed.wsA, '汇总账房数据')
+  const { app, win } = await launchCollab(seed, 'collab-followup', {
+    DAWEIGE_E2E_RUN_ID: runId,
+  })
+  try {
+    const card = win.locator('.delegation-card', { hasText: '汇总账房数据' })
+    await expect(card.getByRole('button', { name: '同意派出' })).toBeVisible({ timeout: 15000 })
+    await card.getByRole('button', { name: '同意派出' }).click()
+
+    const panel = win.locator('.collab-panel')
+    // 活跃自动展开(面板态)
+    await expect(panel).toHaveClass(/is-panel/, { timeout: 10000 })
+
+    // 面板 → 小窗:摘要一行;小窗 → 面板:整卡点回
+    await panel.getByRole('button', { name: '收起' }).click()
+    await expect(panel).toHaveClass(/is-mini/)
+    await expect(panel.locator('.collab-mini-line')).toHaveText('账房 · 1 节点')
+    await panel.locator('.collab-mini').click()
+    await expect(panel).toHaveClass(/is-panel/)
+
+    // 面板 → 详情:tab + 过程区就位
+    await panel.getByRole('button', { name: '查看详情' }).click()
+    await expect(panel).toHaveClass(/is-detail/)
+    await expect(panel.locator('.collab-tab')).toHaveCount(1)
+    await expect(panel.locator('.run-process-pane')).toContainText('账房正在干活', { timeout: 10000 })
+    // 宽屏:流程左栏常驻,抽屉开关不出场
+    await expect(panel.locator('.collab-flow-pane')).toBeVisible()
+    await expect(panel.locator('.collab-flow-drawer-toggle')).toBeHidden()
+
+    // ---- 720 窄窗(窗口最小 960,侧栏后 main-pane≈720):详情铺满可用宽度 ----
+    const browserWindow = await app.browserWindow(win)
+    await browserWindow.evaluate((w) => w.setSize(960, 640))
+    await win.waitForTimeout(400) // 布局沉降
+    // 流程栏收成抽屉:左栏隐藏、抽屉开关出场
+    await expect(panel.locator('.collab-flow-pane')).toBeHidden()
+    await expect(panel.locator('.collab-flow-drawer-toggle')).toBeVisible()
+    // 点开抽屉:流程可点;再点收回
+    await panel.locator('.collab-flow-drawer-toggle').click()
+    await expect(panel.locator('.collab-flow-pane')).toBeVisible()
+    await panel.locator('.collab-flow-drawer-toggle').click()
+    await expect(panel.locator('.collab-flow-pane')).toBeHidden()
+    // tabs 与过程区仍可用;main-pane 无横向溢出
+    await expect(panel.locator('.collab-tab.is-active')).toContainText('账房')
+    await expect(panel.locator('.run-process-pane')).toBeVisible()
+    const overflow = await win.evaluate(() => {
+      // tsconfig.node 无 DOM lib:结构化类型拿 document(回调实际在渲染进程里跑)
+      const doc = (globalThis as unknown as {
+        document: {
+          querySelector(selector: string): { scrollWidth: number; clientWidth: number } | null
+        }
+      }).document
+      const el = doc.querySelector('.main-pane')
+      return el === null ? null : el.scrollWidth - el.clientWidth
+    })
+    expect(overflow).not.toBeNull()
+    expect(overflow!).toBeLessThanOrEqual(1)
+
+    // 详情 → 面板(头栏收起),链仍活跃 → 面板态
+    await panel.locator('.collab-detail-close').click()
+    await expect(panel).toHaveClass(/is-panel/)
+  } finally {
+    await app.close()
+  }
+})
+
+test('A-28 会话边界:普通角色会话无面板;切走再切回小柊不串链', async () => {
+  const seed = await seedCollabWorkspace()
+  // 一条全终态链(空闲小窗态)+ 账房的普通用户会话(面板不该在那边出现)
+  await seedCompletedRun(seed, 'run-1111111111111111', seed.wsA)
+  const sessionRepo = new SessionRepository(join(seed.userDataDir, 'data', 'sessions.sqlite'))
+  await sessionRepo.init()
+  const workerSession = await sessionRepo.create({
+    cwd: seed.wsA,
+    providerId: 'kimi-coding',
+    modelId: 'kimi-for-coding',
+  })
+  const workerMeta = await workerSession.getMetadata()
+  await sessionRepo.close()
+  const bindRepo = new RoleRepository(join(seed.userDataDir, 'data', 'roles.sqlite'))
+  await bindRepo.bindSession({
+    sessionId: workerMeta.id,
+    roleId: ZHANGFANG_ROLE,
+    workspacePathSnapshot: seed.wsA,
+    archivedAt: null,
+    visibility: 'user',
+    source: 'created',
+  })
+  await bindRepo.drainAndClose()
+
+  const { app, win } = await launchCollab(seed)
+  try {
+    // 默认入口=小柊会话:全终态 → 小窗态,摘要一行
+    const panel = win.locator('.collab-panel')
+    await expect(panel).toHaveClass(/is-mini/, { timeout: 10000 })
+    await expect(panel.locator('.collab-mini-line')).toHaveText('账房 · 1 节点')
+    // 空闲链的小窗也点得开(手动展开档):流程里看到已完成节点
+    await panel.locator('.collab-mini').click()
+    await expect(panel).toHaveClass(/is-panel/)
+    await expect(panel.locator('.collab-flow-state')).toHaveText('已完成')
+
+    // 切到账房的普通会话:面板整体不渲染
+    const workerCard = win.locator('.role-card', { hasText: '账房' })
+    await workerCard.locator('.role-card-head').click()
+    await workerCard.locator('.session-item').first().click()
+    await win.waitForTimeout(600)
+    await expect(win.locator('.collab-panel')).toHaveCount(0)
+
+    // 切回小柊:面板回来且仍是那条链(不串链;切会话已清手动档 → 回到空闲小窗)
+    const managerCard = win.locator('.manager-card')
+    await managerCard.locator('.role-card-head').click()
+    await managerCard.locator('.session-item').first().click()
+    await expect(win.locator('.collab-panel')).toHaveClass(/is-mini/, { timeout: 10000 })
+    await expect(win.locator('.collab-mini-line')).toHaveText('账房 · 1 节点')
   } finally {
     await app.close()
   }

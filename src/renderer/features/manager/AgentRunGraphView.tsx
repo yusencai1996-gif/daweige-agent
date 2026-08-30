@@ -11,6 +11,8 @@ import {
   shortStatusText,
   statusInfo,
 } from './DelegationCard'
+// A-28(0.5.0 第三批):拓扑排序/入边推导提取为共用纯函数,横向旧图与纵向新图(VerticalRunFlow)同源
+import { layoutGraph, upstreamLabelsOf, type GraphLayout } from './agent-run-graph-layout'
 
 /**
  * 协作链族谱视图(0.4.0 D 批 UI):详情页顶部的整条链可视化。
@@ -39,81 +41,6 @@ function useWideViewport(): boolean {
   return wide
 }
 
-interface GraphLayout {
-  /** 拓扑序全部节点(同层按 createdAt 谱序);窄屏单列直接用它。 */
-  readonly order: readonly AgentRunSummary[]
-  /** 按拓扑深度分列(仅宽屏 DAG 用);列内保持 createdAt 谱序。 */
-  readonly columns: readonly (readonly AgentRunSummary[])[]
-  /** 每个 run 收到的边(to → edge 列表);窄屏用它出「来自/依赖」文字行。 */
-  readonly incoming: ReadonlyMap<string, readonly AgentRunGraphEdge[]>
-}
-
-/**
- * 纯前端布局推导:Kahn 拓扑 + 最长路定深。图由服务端保证无环;
- * 万一遇到环(契约外脏数据),剩余节点 depth=0 兜底排在队尾,不崩不丢节点。
- */
-function layoutGraph(
-  nodes: readonly AgentRunSummary[],
-  edges: readonly AgentRunGraphEdge[],
-): GraphLayout {
-  const knownIds = new Set(nodes.map((n) => n.runId))
-  const validEdges = edges.filter(
-    (e) => knownIds.has(e.fromRunId) && knownIds.has(e.toRunId) && e.fromRunId !== e.toRunId,
-  )
-  const byCreatedAt = [...nodes].sort((a, b) => a.createdAt - b.createdAt)
-  const createdAtOf = new Map(byCreatedAt.map((n) => [n.runId, n.createdAt]))
-
-  const indegree = new Map<string, number>(byCreatedAt.map((n) => [n.runId, 0]))
-  const outgoing = new Map<string, string[]>()
-  for (const edge of validEdges) {
-    indegree.set(edge.toRunId, (indegree.get(edge.toRunId) ?? 0) + 1)
-    outgoing.set(edge.fromRunId, [...(outgoing.get(edge.fromRunId) ?? []), edge.toRunId])
-  }
-  // Kahn:同轮内按 createdAt 谱序处理,得到稳定的拓扑序列
-  let frontier = byCreatedAt.filter((n) => (indegree.get(n.runId) ?? 0) === 0)
-  const topoIds: string[] = []
-  while (frontier.length > 0) {
-    const nextIds: string[] = []
-    for (const node of frontier) {
-      topoIds.push(node.runId)
-      for (const to of outgoing.get(node.runId) ?? []) {
-        const left = (indegree.get(to) ?? 1) - 1
-        indegree.set(to, left)
-        if (left === 0) nextIds.push(to)
-      }
-    }
-    frontier = nextIds
-      .map((id) => ({ id, at: createdAtOf.get(id) ?? 0 }))
-      .sort((a, b) => a.at - b.at)
-      .map(({ id }) => nodes.find((n) => n.runId === id)!)
-      .filter((node): node is AgentRunSummary => node !== undefined)
-  }
-  // 环兜底:拓扑没走到的节点接在队尾(正常数据到不了这里)
-  for (const node of byCreatedAt) if (!topoIds.includes(node.runId)) topoIds.push(node.runId)
-
-  // 最长路定深:depth[to] = max(depth[from] + 1)
-  const depth = new Map<string, number>(nodes.map((n) => [n.runId, 0]))
-  for (const id of topoIds) {
-    for (const to of outgoing.get(id) ?? []) {
-      depth.set(to, Math.max(depth.get(to) ?? 0, (depth.get(id) ?? 0) + 1))
-    }
-  }
-
-  const columnCount = Math.max(1, ...nodes.map((n) => (depth.get(n.runId) ?? 0) + 1))
-  const columns: AgentRunSummary[][] = Array.from({ length: columnCount }, () => [])
-  for (const node of byCreatedAt) columns[depth.get(node.runId) ?? 0]?.push(node)
-
-  const incoming = new Map<string, AgentRunGraphEdge[]>()
-  for (const edge of validEdges) {
-    incoming.set(edge.toRunId, [...(incoming.get(edge.toRunId) ?? []), edge])
-  }
-  const order = topoIds.map((id) => nodes.find((n) => n.runId === id)).filter(
-    (node): node is AgentRunSummary => node !== undefined,
-  )
-
-  return { order, columns, incoming }
-}
-
 interface WirePath {
   readonly key: string
   readonly kind: AgentRunGraphEdge['kind']
@@ -122,18 +49,13 @@ interface WirePath {
   readonly labelY: number
 }
 
-/** 进入某节点的上游角色名(窄屏文字行用)。 */
+/** 进入某节点的上游角色名(窄屏文字行用);0.5.0 起与纵向面板共用同一份推导。 */
 function upstreamNamesOf(
   graph: AgentRunGraph,
   layout: GraphLayout,
   runId: string,
 ): string[] {
-  return (layout.incoming.get(runId) ?? []).map((edge) => {
-    const name = graph.nodes.find((n) => n.runId === edge.fromRunId)?.targetRoleName
-    return edge.kind === 'handoff'
-      ? `来自:${name ?? '上游'}(交棒)`
-      : `依赖:${name ?? '上游'}`
-  })
+  return upstreamLabelsOf(graph, layout, runId)
 }
 
 /** 单个族谱节点卡:当前 run 为静态高亮,其余渲染成可点按钮跳对应详情页。 */

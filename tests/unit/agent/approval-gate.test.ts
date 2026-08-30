@@ -44,7 +44,7 @@ function ctx(name: string, args: Record<string, unknown>): BeforeToolCallContext
 }
 
 describe('approval gate(beforeToolCall)', () => {
-  it('写操作租约复检(终验·TOCTOU):确认等待窗内新到的租约,批准/approve-session 后仍被挡', async () => {
+  it('写操作租约复检(codex 终验·TOCTOU):确认等待窗内新到的租约,批准/approve-session 后仍被挡', async () => {
     const p = join(workspace, 'lease.txt')
     // 奇数次(弹卡前)放行;偶数次(批准后复检)抛"正被派活使用"——模拟确认等待窗内租约新到
     let calls = 0

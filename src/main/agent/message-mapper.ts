@@ -1,4 +1,9 @@
-import type { AgentMessage, Entry } from '@earendil-works/pi-agent-core'
+import {
+  buildSessionContext,
+  estimateContextTokens,
+  type AgentMessage,
+  type Entry,
+} from '@earendil-works/pi-agent-core'
 import { contentText } from '@earendil-works/pi-ai'
 import type { TextContent, ThinkingContent, ToolCall } from '@earendil-works/pi-ai'
 import type { ChatMessage, ToolExecutionInfo } from '../../shared/domain/message'
@@ -19,7 +24,7 @@ type AssistantContent = readonly (TextContent | ThinkingContent | ToolCall)[]
 
 /** 渲染展示用:映射成大微阁 ChatMessage 判别联合。 */
 export function entriesToChatMessages(entries: readonly Entry[]): ChatMessage[] {
-  // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(复审阻断项)
+  // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(独立复审阻断项)
   const erroredCalls = new Map<string, string>()
   // run_command 终值详情(0.4.0 C):从 toolResult.details 恢复 CommandBlock 数据源
   const commandDetails = new Map<string, CommandResultDetails>()
@@ -35,7 +40,21 @@ export function entriesToChatMessages(entries: readonly Entry[]): ChatMessage[] 
     }
   }
   const result: ChatMessage[] = []
-  for (const entry of entries) {
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    const entry = entries[entryIndex]!
+    if (entry.type === 'compaction') {
+      const messages = buildSessionContext(entries.slice(0, entryIndex + 1)).messages
+      result.push({
+        kind: 'compaction',
+        id: entry.id,
+        role: 'system',
+        summary: entry.summary,
+        tokensBefore: entry.tokensBefore,
+        tokensAfter: estimateContextTokens(messages).tokens,
+        createdAt: entry.timestamp,
+      })
+      continue
+    }
     if (!isMessageEntry(entry)) continue
     const m = entry.message
     if (m.role === 'user') {

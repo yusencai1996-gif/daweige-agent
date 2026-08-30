@@ -223,7 +223,7 @@ export function newGraphId(): string {
 }
 
 /**
- * 迁移坏 runId 的确定性替身(复审整改):非法 ID 不许进 v2
+ * 迁移坏 runId 的确定性替身(codex 复验整改):非法 ID 不许进 v2
  * (IPC schema 会拒操作),sha256 前 16 位保证同输入同输出,留档可追溯。
  */
 export function legacySafeRunId(raw: string): string {
@@ -463,7 +463,7 @@ export class RoleRepository {
           mapped = this.remapLegacyRunPayloads(row)
         } catch {
           // 坏行 fail-closed:收 failed,不注入模型(与 mapAgentRunFailClosed 同语义);
-          // runId 非法时换确定性替身(sha256 前 16 位)——非法 ID 不许进 v2(复审整改)
+          // runId 非法时换确定性替身(sha256 前 16 位)——非法 ID 不许进 v2(codex 复验整改)
           insert.run(
             legacySafeRunId(String(row.run_id ?? '')),
             String(row.manager_session_id ?? ''), String(row.target_role_id ?? ''),
@@ -504,7 +504,7 @@ export class RoleRepository {
       if (before !== after) {
         throw new Error(`v2 迁移行数对账失败(前 ${before} 后 ${after}),已回滚,下次启动重试`)
       }
-      // FK 对账(复审整改):PRAGMA foreign_key_check 对 WITHOUT ROWID 表返回 rowid=NULL
+      // FK 对账(codex 复验整改):PRAGMA foreign_key_check 对 WITHOUT ROWID 表返回 rowid=NULL
       // 无法定位行——改用 SELECT 主动找孤儿引用(v1 库 FK OFF 期间手工写入才可能产生)。
       // parent 孤儿可修(清引用);target_role 孤儿列 NOT NULL 无法根治,收 failed 保留(仅显示,不可再操作)。
       const orphanParents = this.db
@@ -530,7 +530,7 @@ export class RoleRepository {
         .all() as Array<{ run_id: string; t: string; n: string }>
       if (orphanTargets.length > 0) {
         // FK 要求 roles.id 存在且 target_role_id NOT NULL——补 legacy-unresolved 占位角色
-        // (kind 不进正常角色流,归档态不可派活),既满足 FK 又保留留档(复审整改)
+        // (kind 不进正常角色流,归档态不可派活),既满足 FK 又保留留档(codex 复验整改)
         const insertPlaceholder = this.db.prepare(
           `INSERT INTO roles (id, kind, display_name, template_id, home_rel_path,
              guardrails_rel_path, guardrails_version, lifecycle, archived_at, created_at, updated_at)
@@ -553,7 +553,7 @@ export class RoleRepository {
         }
         console.error(`[roles] v2 迁移:${orphanTargets.length} 条派活的目标角色已不存在,补占位角色并收 failed 留档`)
       }
-      // FK 复查(复审整改):修复后仍有 violation = 漏网孤儿类型,整体回滚拒绝带病进 v2
+      // FK 复查(codex 复验整改):修复后仍有 violation = 漏网孤儿类型,整体回滚拒绝带病进 v2
       const fkViolations = this.db
         .prepare('PRAGMA foreign_key_check')
         .all() as Array<Record<string, unknown>>
@@ -774,7 +774,7 @@ export class RoleRepository {
   }
 
   /**
-   * 守则保存的完整原子块(复审 B-01):文件替换与条件递增在同一队列槽内串行执行;
+   * 守则保存的完整原子块(独立复审 B-01):文件替换与条件递增在同一队列槽内串行执行;
    * 版本未命中(并发方已胜)时恢复原文,保证"最终落盘内容=版本胜出方"。
    */
   runGuardrailsUpdate(
@@ -800,7 +800,7 @@ export class RoleRepository {
     })
   }
 
-  /** 删除启动的事务原子块(复审 B-03):lifecycle=deleting 与 job 初始记录同事务。 */
+  /** 删除启动的事务原子块(独立复审 B-03):lifecycle=deleting 与 job 初始记录同事务。 */
   beginDeletionTransaction(
     roleId: string,
     impactVersion: string,
@@ -1505,7 +1505,7 @@ export class RoleRepository {
       if (isTerminalStatusLiteral(target.status)) {
         throw new Error('交棒目标已经结束,不能再接收交棒')
       }
-      // 成环检测(复审整改):写 (target←source) 边前,若 source 的依赖闭包已含 target,
+      // 成环检测(codex 复验整改):写 (target←source) 边前,若 source 的依赖闭包已含 target,
       // 写入即成环(如 B depends A 已存在,再交棒 A←B 就闭环)。graph ≤64 节点,DFS 足够。
       if (input.sourceRunIds.includes(input.targetRunId)) throw new Error('交棒不能以自己为来源')
       if (this.graphWouldCycle(target.graph_id, input.targetRunId, input.sourceRunIds)) {
@@ -1594,7 +1594,7 @@ export class RoleRepository {
   /**
    * 重叠判定(PLAN §6.2 原文):canonical path 相等**或任一包含另一**(父子路径也算重叠)。
    * canonicalWorkspaceKey 输出小写正斜杠(normalizeKey);曾用反斜杠追加导致正斜杠路径的
-   * 父子目录判不重叠(阶段复审阻断,探针实证)。入口先归一(反斜杠→正斜杠、
+   * 父子目录判不重叠(codex 阶段复审阻断,探针实证)。入口先归一(反斜杠→正斜杠、
    * 小写、去尾斜杠):重叠判定宁多判(排队)不漏判(并行写灾难)。
    */
   private static rootsOverlap(a: string, b: string): boolean {
@@ -2098,7 +2098,7 @@ function parseDelegationResult(
     conclusions: requireStringArray(result.conclusions, 'result.conclusions'),
     artifactPaths: requireStringArray(result.artifactPaths, 'result.artifactPaths'),
     unmetCriteria: requireStringArray(result.unmetCriteria, 'result.unmetCriteria'),
-    // A-19 数据明细:可选字段,旧行没有;键存在就必须是 1~4000 字合法串(复审整改:
+    // A-19 数据明细:可选字段,旧行没有;键存在就必须是 1~4000 字合法串(独立复审整改:
     // 显式 null 不能当缺省放行——解析层对同数据会整块 fallback,读层也要 fail closed 对称)
     ...('detailData' in result
       ? { detailData: requireStringLength(result.detailData, 'result.detailData', 1, 4_000) }

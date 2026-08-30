@@ -15,6 +15,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  /* A-27:返回/刷新钮不收缩,窄窗整体换行兜底 */
+  flex-wrap: wrap;
 }
 .usage-header-left {
   display: flex;
@@ -79,19 +81,26 @@
 }
 .usage-card-value {
   margin-top: 4px;
-  /* 20px/零字距:五列等宽下「34小时21分」级长值不截断(nowrap+ellipsis 仅作兜底) */
+  /* A-26:不裁字(可见=可复制)——删掉 nowrap+ellipsis,长值允许两行;窄窗降字号兜底 */
   font-size: 20px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.3;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: break-word;
 }
 /* 小屏:2+2+1 自适应换行 */
 @media (max-width: 900px) {
   .usage-cards {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+  .usage-card-value {
+    font-size: 17px;
+  }
+}
+/* 720 窄窗:再降一档,长时长值两行内完整放下 */
+@media (max-width: 760px) {
+  .usage-card-value {
+    font-size: 15px;
   }
 }
 

@@ -11,7 +11,7 @@
 
 /** 使用统计整页快照(usage:getDashboard 响应)。 */
 export interface UsageDashboard {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 2
   readonly generatedAt: number
   /** IANA 时区标识(聚合归日用,如 Asia/Shanghai)。 */
   readonly timeZone: string
@@ -23,8 +23,8 @@ export interface UsageDashboard {
     readonly totalTokens: number
     /** 单日峰值(按本地自然日汇总取最大)。 */
     readonly peakDailyTokens: number
-    /** 最长会话时长(会话首条~末条消息的 wall-clock 跨度,毫秒)。 */
-    readonly longestSessionDurationMs: number
+    /** 最长活跃会话时长(相邻 usage 事件不超过 30 分钟的间隔累计,毫秒)。 */
+    readonly longestActiveSessionDurationMs: number
     /** 当前连续使用天数;今天无用量则为 0。 */
     readonly currentStreakDays: number
     readonly longestStreakDays: number

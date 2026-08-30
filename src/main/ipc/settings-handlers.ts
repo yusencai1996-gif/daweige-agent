@@ -1,9 +1,12 @@
 import { registerHandler, ipcError } from './handler'
 import type { SettingsStore } from '../storage/settings-store'
+import type { RoleRepository } from '../roles/role-repository'
+import { pruneRoleModelDefaults } from '../../shared/domain/model-selection'
+import type { Settings } from '../../shared/domain/settings'
 
 /** 设置 IPC(M2-04;0.4.0 A 加 managerWorkspacePath 防绕过)。 */
 
-export function registerSettingsHandlers(store: SettingsStore): void {
+export function registerSettingsHandlers(store: SettingsStore, roles?: RoleRepository): void {
   registerHandler('settings:get', async () => store.load())
 
   registerHandler('settings:update', async ({ settings }) => {
@@ -22,6 +25,29 @@ export function registerSettingsHandlers(store: SettingsStore): void {
         '小柊的工作文件夹不能在这里直接改;请到设置页「总管工作区」里选择新位置完成迁移',
       )
     }
-    return store.save({ ...settings, managerWorkspacePath: protectedValue })
+    let normalized = pruneRoleModelDefaults({ ...settings, managerWorkspacePath: protectedValue })
+    normalized = await pruneOrphanRoleDefaults(normalized, roles)
+    return store.save(normalized)
   })
+}
+
+async function pruneOrphanRoleDefaults(settings: Settings, roles?: RoleRepository): Promise<Settings> {
+  if (!roles || !settings.roleModelDefaults) return settings
+  const next = { ...settings.roleModelDefaults }
+  try {
+    // ⑤审整改:逐 key 串行查库最多 128 次,并行化(本地 SQLite 小查询,无竞争)
+    await Promise.all(
+      Object.keys(next).map(async (roleId) => {
+        if (roleId === 'sys-xiaozhen') return
+        if (!(await roles.getRoleRow(roleId))) delete next[roleId]
+      }),
+    )
+  } catch {
+    // 角色库降级时不阻断设置页，也不误删仍可能有效的映射。
+    return settings
+  }
+  if (Object.keys(next).length === Object.keys(settings.roleModelDefaults).length) return settings
+  if (Object.keys(next).length > 0) return { ...settings, roleModelDefaults: next }
+  const { roleModelDefaults: _removed, ...rest } = settings
+  return rest
 }

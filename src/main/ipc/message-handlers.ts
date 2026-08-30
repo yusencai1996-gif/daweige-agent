@@ -6,10 +6,11 @@ import type { SettingsStore } from '../storage/settings-store'
 import { SessionNotFoundError } from '../storage/session-service'
 import type { ApprovalBroker } from '../agent/approval-broker'
 import type { CredentialStore } from '../security/credential-store'
+import { isEnabledModel } from '../../shared/domain/model-selection'
 
 /**
  * 消息 IPC(M3-04)。
- * message:send 用 settings 里的当前厂商选择(顶部切换已写入 settings)。
+ * message:send 明确携带本次选择；主进程校验启用池与凭据。
  */
 
 export function registerMessageHandlers(
@@ -19,7 +20,7 @@ export function registerMessageHandlers(
   credentialStore?: CredentialStore,
   sessionService?: import('../storage/session-service').SessionService,
 ): void {
-  registerHandler('message:send', async ({ sessionId, text }) => {
+  registerHandler('message:send', async ({ sessionId, text, selection }) => {
     // 已归档会话兜底拦截(前端已禁输入;万一绕过也不让继续聊,批3初审整改)
     try {
       await sessionService?.assertUserVisibleSession(sessionId)
@@ -28,8 +29,11 @@ export function registerMessageHandlers(
       throw mapAgentError(err)
     }
     const settings = await settingsStore.load()
+    if (!isEnabledModel(settings, selection)) {
+      throw ipcError('EINVALID_REQUEST', '所选模型不在已启用模型池中;请回到设置页重新选择')
+    }
     // A-05:未填 key 直接发消息时,先给人话提示(否则 pi 凭据层英文错误直出)
-    const providerId = settings.providerSelection.providerId
+    const providerId = selection.providerId
     if (credentialStore && !credentialStore.status(providerId).configured) {
       throw ipcError(
         'EPROVIDER_NOT_CONFIGURED',
@@ -37,7 +41,7 @@ export function registerMessageHandlers(
       )
     }
     try {
-      return await agentService.send(sessionId, text, settings.providerSelection)
+      return await agentService.send(sessionId, text, selection)
     } catch (err) {
       throw mapAgentError(err)
     }

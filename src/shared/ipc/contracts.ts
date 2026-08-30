@@ -7,6 +7,7 @@ import type {
   MemoryEntry,
   ProviderId,
   ProviderInfo,
+  ProviderSelection,
   Reminder,
   RoleDeleteImpact,
   RoleDeleteResult,
@@ -160,8 +161,6 @@ export interface IpcRequestMap {
     request: {
       /** 会话挂在哪个角色下(worker roleId 或内置总管 'sys-xiaozhen');cwd 由主进程解析,不信任渲染进程传路径。 */
       readonly roleId: string
-      readonly providerId: ProviderId
-      readonly modelId: string
     }
     response: SessionDetail
   }
@@ -213,7 +212,7 @@ export interface IpcRequestMap {
   'agentRun:getDetail': {
     request: {
       readonly runId: import('../domain/manager').AgentRunId
-      /** 调用方 manager 会话(ownership 双重校验;阶段复审整改,对齐 getGraph/interrupt) */
+      /** 调用方 manager 会话(ownership 双重校验;codex 阶段复审整改,对齐 getGraph/interrupt) */
       readonly managerSessionId: string
     }
     response: import('../domain/manager').AgentRunDetail
@@ -245,6 +244,8 @@ export interface IpcRequestMap {
       readonly sessionId: string
       /** 1~100000 字。 */
       readonly text: string
+      /** 当前消息明确使用的模型；主进程仍须校验启用池与凭据。 */
+      readonly selection: ProviderSelection
     }
     /** 持久化后的用户消息(带主进程生成的 id/createdAt);回复经 agent:event 流回。 */
     response: ChatMessage

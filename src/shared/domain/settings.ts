@@ -1,5 +1,8 @@
 import type { ProviderSelection } from './provider'
 
+/** 可拥有角色默认模型的角色 ID。运行时格式由 IPC schema/纯函数共同约束。 */
+export type RoleModelOwnerId = string
+
 /**
  * 非敏感设置(持久化到 userData 下的 JSON)。
  * 铁律:Settings 里绝不出现任何 API key / 凭据内容。
@@ -29,6 +32,8 @@ export interface Settings {
    * 缺省/为空时前端回退只显示 providerSelection 一项(老数据兼容)。
    */
   readonly enabledModels?: readonly ProviderSelection[]
+  /** 角色级默认模型；缺省等价于全部角色跟随全局默认。 */
+  readonly roleModelDefaults?: Readonly<Record<RoleModelOwnerId, ProviderSelection>>
   readonly windowBounds?: WindowBounds
   /** 上次活跃会话;启动时据此恢复(无则进空状态)。 */
   readonly lastActiveSessionId?: string

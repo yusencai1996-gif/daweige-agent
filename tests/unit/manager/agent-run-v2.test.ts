@@ -159,7 +159,7 @@ describe('agent_runs v1→v2 迁移(0.4.0 D)', () => {
     expect(await repo.listAgentRuns()).toHaveLength(3)
   })
 
-  it('v1 脏引用迁移:坏 runId 换替身/parent 孤儿摘引用/target 孤儿补占位角色,FK 复查全清(复审整改)', async () => {
+  it('v1 脏引用迁移:坏 runId 换替身/parent 孤儿摘引用/target 孤儿补占位角色,FK 复查全清(codex 复验整改)', async () => {
     await repo.drainAndClose()
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
@@ -233,7 +233,7 @@ describe('agent_runs v1→v2 迁移(0.4.0 D)', () => {
 })
 
 describe('协作链原语(edges/inputs/leases)', () => {
-  it('rootsOverlap 认真实 canonical 输出:正斜杠父子算冲突,同前缀非父子放行(阶段复审阻断回归)', async () => {
+  it('rootsOverlap 认真实 canonical 输出:正斜杠父子算冲突,同前缀非父子放行(codex 阶段复审阻断回归)', async () => {
     const { canonicalWorkspaceKey } = await import('../../../src/main/roles/role-files')
     const { mkdirSync } = await import('node:fs')
     mkdirSync(join(dir, 'inner-ws'), { recursive: true })
@@ -504,7 +504,7 @@ describe('协作链原语(edges/inputs/leases)', () => {
     expect(run.graphId).toMatch(/^graph-[a-f0-9]{16}$/)
   })
 
-  it('acquireLeasesAndStart 原子启动:父子路径重叠也算冲突;终态自动释放租约(复审整改回归)', async () => {
+  it('acquireLeasesAndStart 原子启动:父子路径重叠也算冲突;终态自动释放租约(独立复审整改回归)', async () => {
     // run-A 占 C:\ws\reports(经原子启动)
     await repo.createAgentRun({
       runId: 'run-aaaaaaaaaaaaaaaa',
@@ -572,7 +572,7 @@ describe('协作链原语(edges/inputs/leases)', () => {
     expect(await repo.listWorkspaceLeases()).toEqual([])
   })
 
-  it('handoff 校验:自环/来源未完成拒绝;合法交棒落库(复审整改回归)', async () => {
+  it('handoff 校验:自环/来源未完成拒绝;合法交棒落库(独立复审整改回归)', async () => {
     const graphId = newGraphId()
     // source-d:先停在 running(未完成)
     await repo.createAgentRun({
@@ -652,7 +652,7 @@ describe('协作链原语(edges/inputs/leases)', () => {
     expect(f.graphId).toBe(graphId)
   })
 
-  it('parentRunId 跨图拒绝(复审整改回归)', async () => {
+  it('parentRunId 跨图拒绝(独立复审整改回归)', async () => {
     await repo.createAgentRun({
       runId: 'run-1234567890abc003',
       managerSessionId: 'mgr-1',

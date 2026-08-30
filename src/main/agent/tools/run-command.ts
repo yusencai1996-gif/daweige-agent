@@ -114,7 +114,7 @@ export function createRunCommandTool(deps: RunCommandToolDeps): AgentTool<typeof
         throw new Error('工作目录不在允许写的文件夹里。')
       }
 
-      // 1.5) 工作区租约门(普通/manager 会话):被派活占用的根直接拒,不弹卡(阶段复审阻断整改)
+      // 1.5) 工作区租约门(普通/manager 会话):被派活占用的根直接拒,不弹卡(codex 阶段复审阻断整改)
       if (deps.assertNotLeased) {
         await deps.assertNotLeased()
       }
@@ -173,7 +173,7 @@ export function createRunCommandTool(deps: RunCommandToolDeps): AgentTool<typeof
       }
       // allow 档:不弹卡不写缓存,直接执行(仍过沙箱)
 
-      // 3.5) 批准后复检租约(终验·TOCTOU):等用户确认的窗口里 delegated run
+      // 3.5) 批准后复检租约(codex 终验·TOCTOU):等用户确认的窗口里 delegated run
       // 可能恰好拿到同根租约——批准/allow 都不能绕过互斥,执行前最后核一次
       if (deps.assertNotLeased) {
         await deps.assertNotLeased()

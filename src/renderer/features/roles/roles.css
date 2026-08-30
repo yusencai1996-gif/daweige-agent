@@ -278,6 +278,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* A-27:按钮全局 nowrap+flex-shrink:0 后,底部按钮行窄窗允许换行兜底,不溢出 */
+  flex-wrap: wrap;
 }
 .role-dialog-foot-gap {
   flex: 1;
@@ -400,6 +402,8 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  /* A-27:右侧操作钮不收缩,窄窗整体换行 */
+  flex-wrap: wrap;
 }
 .rules-header-left {
   display: flex;
@@ -469,6 +473,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* A-27:返回钮不收缩,标题区先收缩 */
+  min-width: 0;
 }
 .archive-title {
   margin: 0;

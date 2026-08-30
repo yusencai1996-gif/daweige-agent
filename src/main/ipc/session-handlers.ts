@@ -8,6 +8,8 @@ import {
 import type { AgentService } from '../agent/agent-service'
 import type { ApprovalBroker } from '../agent/approval-broker'
 import type { ManagerCleanupService } from '../manager/manager-cleanup-service'
+import type { SettingsStore } from '../storage/settings-store'
+import { resolveRoleModel } from '../../shared/domain/model-selection'
 
 /**
  * 会话 IPC(M2-06 + M3-04 + 0.2.0 A3)。
@@ -20,10 +22,17 @@ export function registerSessionHandlers(
   agentService?: AgentService,
   approvalBroker?: ApprovalBroker,
   managerCleanup?: ManagerCleanupService,
+  settingsStore?: SettingsStore,
 ): void {
-  registerHandler('session:create', async ({ roleId, providerId, modelId }) => {
+  registerHandler('session:create', async ({ roleId }) => {
     try {
-      return await service.create({ roleId, providerId, modelId })
+      if (!settingsStore) throw new SessionCreateError('设置服务不可用;暂时不能创建会话')
+      const { selection } = resolveRoleModel(await settingsStore.load(), roleId)
+      return await service.create({
+        roleId,
+        providerId: selection.providerId,
+        modelId: selection.modelId,
+      })
     } catch (err) {
       throw mapSessionError(err)
     }

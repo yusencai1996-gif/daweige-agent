@@ -20,6 +20,14 @@ const ProviderIdSchema = Type.Union([
 
 const SessionIdSchema = Type.String({ minLength: 1, maxLength: 64 })
 
+export const ProviderSelectionSchema = Type.Object(
+  {
+    providerId: ProviderIdSchema,
+    modelId: Type.String({ minLength: 1, maxLength: 100 }),
+  },
+  strict,
+)
+
 /** 角色 ID:agent- + 12 位小写十六进制。任意伪造格式(含 sys- 前缀)均被拒。 */
 const RoleIdSchema = Type.String({ pattern: '^agent-[a-f0-9]{12}$' })
 
@@ -67,8 +75,6 @@ const NoDotDotSegment = Type.String({
 export const SessionCreateRequestSchema = Type.Object(
   {
     roleId: SessionCreateRoleSchema,
-    providerId: ProviderIdSchema,
-    modelId: Type.String({ minLength: 1, maxLength: 100 }),
   },
   strict,
 )
@@ -185,6 +191,7 @@ export const MessageSendRequestSchema = Type.Object(
   {
     sessionId: SessionIdSchema,
     text: Type.String({ minLength: 1, maxLength: 100_000 }),
+    selection: ProviderSelectionSchema,
   },
   strict,
 )
@@ -218,18 +225,17 @@ export const WindowBoundsSchema = Type.Object(
   strict,
 )
 
-export const ProviderSelectionSchema = Type.Object(
-  {
-    providerId: ProviderIdSchema,
-    modelId: Type.String({ minLength: 1, maxLength: 100 }),
-  },
-  strict,
-)
-
 export const SettingsSchema = Type.Object(
   {
     providerSelection: ProviderSelectionSchema,
     enabledModels: Type.Optional(Type.Array(ProviderSelectionSchema, { maxItems: 32, uniqueItems: true })),
+    roleModelDefaults: Type.Optional(
+      Type.Record(
+        Type.String({ pattern: '^(?:agent-[a-f0-9]{12}|sys-xiaozhen)$' }),
+        ProviderSelectionSchema,
+        { maxProperties: 128 },
+      ),
+    ),
     windowBounds: Type.Optional(WindowBoundsSchema),
     lastActiveSessionId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
     thinkingLevel: Type.Optional(

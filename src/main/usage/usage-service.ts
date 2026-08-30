@@ -1,9 +1,15 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core'
+import type { AgentMessage, CompactionEntry } from '@earendil-works/pi-agent-core'
 import type { UsageDashboard } from '../../shared/domain/usage'
 import type { AgentRunSummary } from '../../shared/domain/manager'
 import type { AgentPushEvent } from '../../shared/ipc/events'
 import type { UsageStore } from './usage-store'
-import { currentIanaTimeZone, parseAssistantUsage, type ParsedUsageEvent } from './usage-parser'
+import {
+  currentIanaTimeZone,
+  parseAssistantUsage,
+  parseCompactionUsage,
+  type ParsedUsageEvent,
+} from './usage-parser'
+import type { UsageEntryRow } from '../storage/session-repository'
 
 /**
  * 使用统计服务(PLAN §6.2,2026-08-24 复审整改版)。
@@ -21,19 +27,17 @@ export interface UsageRecorder {
     sessionId: string
     message: AgentMessage
   }): void
-  recordMessageSpan(sessionId: string, atMs: number): void
+  recordCompactionEntry(input: {
+    sourceEntryId: string
+    sessionId: string
+    entry: CompactionEntry
+  }): void
 }
 
 export interface UsageServiceDeps {
   emitEvent: (event: AgentPushEvent) => void
   /** 惰性分页只读遍历 pi 会话库 message entries(SessionRepository.iterateMessageEntries;测试可传数组)。 */
-  iterateMessageEntries: () => Iterable<{
-    sessionId: string
-    entryId: string
-    seq: number
-    timestamp: number
-    message: unknown
-  }>
+  iterateUsageEntries: () => Iterable<UsageEntryRow>
   logError: (message: string, error: unknown) => void
 }
 
@@ -78,10 +82,28 @@ export class UsageService implements UsageRecorder {
       .catch((error) => this.deps.logError('usage live 记录失败(不影响聊天)', error))
   }
 
-  recordMessageSpan(sessionId: string, atMs: number): void {
+  recordCompactionEntry(input: {
+    sourceEntryId: string
+    sessionId: string
+    entry: CompactionEntry
+  }): void {
+    let event: ParsedUsageEvent | undefined
+    try {
+      event = parseCompactionUsage({ ...input, timeZone: currentIanaTimeZone() })
+    } catch (error) {
+      this.deps.logError('compaction usage 解析异常(已跳过)', error)
+      return
+    }
+    if (!event) return
     void this.store
-      .upsertSessionSpan(sessionId, atMs)
-      .catch((error) => this.deps.logError('usage 会话跨度记录失败', error))
+      .insertEvents(
+        [{ ...event, sourceEntryId: idempotencyKey(input.sessionId, input.sourceEntryId) }],
+        'live',
+      )
+      .then((inserted) => {
+        if (inserted > 0) this.notifyUpdated()
+      })
+      .catch((error) => this.deps.logError('compaction usage live 记录失败(不影响聊天)', error))
   }
 
   private notifyUpdated(): void {
@@ -100,30 +122,20 @@ export class UsageService implements UsageRecorder {
     try {
       const timeZone = currentIanaTimeZone()
       const batch: ParsedUsageEvent[] = []
-      const spans = new Map<string, { first: number; last: number }>()
       const flush = async (): Promise<void> => {
         if (batch.length === 0) return
         const inserted = await this.store.insertEvents(batch, 'backfill')
         batch.length = 0
         if (inserted > 0) this.notifyUpdated()
-        // 让出事件循环:批量事务不长时间占住主线程(复审 B-01)
+        // 让出事件循环:批量事务不长时间占住主线程(独立复审 B-01)
         await new Promise((resolve) => setImmediate(resolve))
       }
-      for (const row of this.deps.iterateMessageEntries()) {
-        // 行级隔离(复审 B-02):一条坏数据只丢自己,不阻断其后所有历史回填
+      for (const row of this.deps.iterateUsageEntries()) {
+        // 行级隔离(独立复审 B-02):一条坏数据只丢自己,不阻断其后所有历史回填
         try {
-          const message = row.message as { role?: string; timestamp?: number }
-          const at =
-            typeof message?.timestamp === 'number' && Number.isFinite(message.timestamp)
-              ? message.timestamp
-              : row.timestamp
-          const span = spans.get(row.sessionId)
-          if (!span) spans.set(row.sessionId, { first: at, last: at })
-          else {
-            span.first = Math.min(span.first, at)
-            span.last = Math.max(span.last, at)
-          }
-          if (message?.role === 'assistant') {
+          if (row.type === 'message') {
+            const message = row.message as { role?: string; timestamp?: number }
+            if (message?.role !== 'assistant') continue
             const parsed = parseAssistantUsage({
               sourceEntryId: idempotencyKey(row.sessionId, row.entryId),
               sessionId: row.sessionId,
@@ -133,6 +145,14 @@ export class UsageService implements UsageRecorder {
               occurredAtFallbackMs: row.timestamp,
             })
             if (parsed) batch.push(parsed)
+          } else {
+            const parsed = parseCompactionUsage({
+              sourceEntryId: idempotencyKey(row.sessionId, row.entryId),
+              sessionId: row.sessionId,
+              entry: row.entry,
+              timeZone,
+            })
+            if (parsed) batch.push(parsed)
           }
         } catch (rowError) {
           this.deps.logError(`usage 回填跳过异常 entry(${row.sessionId}#${row.seq})`, rowError)
@@ -140,10 +160,6 @@ export class UsageService implements UsageRecorder {
         if (batch.length >= BACKFILL_BATCH_SIZE) await flush()
       }
       await flush()
-      for (const [sessionId, span] of spans) {
-        await this.store.upsertSessionSpan(sessionId, span.first)
-        if (span.last !== span.first) await this.store.upsertSessionSpan(sessionId, span.last)
-      }
       await this.store.setMeta('backfill_completed_at', new Date().toISOString())
     } catch (error) {
       this.deps.logError('usage 回填整体失败(下次启动重试)', error)

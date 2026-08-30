@@ -140,7 +140,7 @@ describe('RoleService:守则并发保存原子性(初审严重项整改)', () =>
     expect((aOk ? 1 : 0) + (bOk ? 1 : 0)).toBe(1) // 恰好一个成功
     const { text, version } = await service.readGuardrailsOf(created.summary.id)
     expect(version).toBe(2) // 版本只 +1,不再凭空 +2
-    // 复审 B-01 加严:最终内容必须等于"成功方"的内容,不是"两版之一"——
+    // 独立复审 B-01 加严:最终内容必须等于"成功方"的内容,不是"两版之一"——
     // 失败方内容若残留(落盘但版本归对方)在此暴露
     const winnerText = aOk ? '# A 版守则' : '# B 版守则'
     expect(text).toBe(winnerText)

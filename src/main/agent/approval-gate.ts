@@ -142,7 +142,7 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
       if (zones.some((z) => z.zone === 'app-internal')) {
         return { block: true, reason: '应用内部数据不允许修改。' }
       }
-      // 工作区租约门(普通会话):被派活占用的根直接 block,弹卡也不能执行(阶段复审阻断整改)
+      // 工作区租约门(普通会话):被派活占用的根直接 block,弹卡也不能执行(codex 阶段复审阻断整改)
       if (!isStrictDelegationPathPolicy(deps.policy) && deps.assertNotLeased) {
         try {
           await deps.assertNotLeased(checkPaths)
@@ -172,7 +172,7 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         recoverable: name === 'delete_paths', // 删除走回收站
         outsideWorkspace: outside,
       }))
-      // 批准后复检租约(复审整改复验·TOCTOU):等用户确认的窗口里,delegated run
+      // 批准后复检租约(codex 整改复验·TOCTOU):等用户确认的窗口里,delegated run
       // 可能恰好拿到同根租约——approve 与 approve-session 都不能成为绕过互斥的后门
       if (
         (outcome.decision === 'approve' || outcome.decision === 'approve-session') &&

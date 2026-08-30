@@ -204,6 +204,17 @@ function wireDemoBehaviors(mock: MockBridge): void {
       createdAt: now - 3_000_000,
     },
     {
+      // A-29 演示:dev 预览里一条压缩提示行(重启恢复渲染路径,与 session:open 映射同形态)
+      kind: 'compaction',
+      role: 'system',
+      id: 'demo-compaction-1',
+      summary:
+        '此前已确认:下载文件夹里共 38 张图片、12 个文档;整理方案是按拍摄月份建文件夹再移动,移动前先把清单给用户过目。用户偏好:不保留原位置副本。',
+      tokensBefore: 182_400,
+      tokensAfter: 3_120,
+      createdAt: now - 2_995_000,
+    },
+    {
       kind: 'chat',
       role: 'assistant',
       id: 'demo-msg-a1',
@@ -477,13 +488,60 @@ function wireDemoBehaviors(mock: MockBridge): void {
     return detail
   })
 
+  /**
+   * A-28 演示:list 也合并 demoRunState——批准后的状态流转在切会话重进时不倒退
+   * (invoke 在覆写前调用,拿到的是种子静态版;之后再走本覆写)。
+   */
+  const seededRunsPromise = Promise.resolve(
+    mock.invoke('agentRun:list', { managerSessionId: 'demo-session-manager' }),
+  )
+  mock.handle('agentRun:list', async ({ managerSessionId }) => {
+    const base = await seededRunsPromise
+    return base
+      .filter((r) => r.managerSessionId === managerSessionId)
+      .map((r) => demoRunState.get(r.runId) ?? r)
+  })
+
+  /**
+   * A-28 演示:面板显示的链图按 graphId 取;种子 getGraph 读静态 demoRuns,
+   * 批准演示 run 后状态留在 demoRunState——这里覆写合并,面板上节点状态跟事件走。
+   */
+  mock.handle('agentRun:getGraph', async ({ graphId, managerSessionId }) => {
+    const runs = await mock.invoke('agentRun:list', { managerSessionId: 'demo-session-manager' })
+    const nodes = runs
+      .filter((r) => r.graphId === graphId)
+      .map((r) => demoRunState.get(r.runId) ?? r)
+    if (nodes.length === 0) throw new Error(`MockBridge: 未预置协作链 ${graphId}`)
+    if (nodes.some((n) => n.managerSessionId !== managerSessionId)) {
+      throw new Error('MockBridge: 协作链不属于该总管会话')
+    }
+    const edges =
+      graphId === 'graph-0123456789abcdef'
+        ? [{ fromRunId: 'run-a1b2c3d4e5f60718', toRunId: 'run-b2c3d4e5f6a70829', kind: 'handoff' as const }]
+        : []
+    return {
+      graphId,
+      managerSessionId,
+      nodes,
+      edges,
+      aggregate: {
+        active: nodes.filter((n) => ['awaiting-approval', 'queued', 'running', 'waiting'].includes(n.status)).length,
+        completed: nodes.filter((n) => n.status === 'completed').length,
+        failed: nodes.filter((n) => n.status === 'failed' || n.status === 'rejected').length,
+        interrupted: nodes.filter((n) => n.status === 'interrupted').length,
+        totalTokens: nodes.reduce((sum, n) => sum + n.usage.totalTokens, 0),
+      },
+    }
+  })
+
   mock.handle('session:list', () => summaries)
   mock.handle('session:open', ({ sessionId }) => {
     const detail = details.get(sessionId)
     if (!detail) return Promise.reject(new Error('这条会话不存在或已经删掉了'))
     return detail
   })
-  mock.handle('session:create', ({ roleId, providerId, modelId }) => {
+  mock.handle('session:create', ({ roleId }) => {
+    const selection = { providerId: 'kimi-coding', modelId: 'kimi-for-coding' } as const
     const createdAt = Date.now()
     const summary: SessionSummary = {
       id: nextId('session'),
@@ -492,8 +550,8 @@ function wireDemoBehaviors(mock: MockBridge): void {
       workspacePath: roleId === 'sys-xiaozhen' ? '' : 'C:\\Users\\demo\\Downloads',
       roleId,
       archivedAt: null,
-      providerId,
-      modelId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
       createdAt,
       updatedAt: createdAt,
       messageCount: 0,

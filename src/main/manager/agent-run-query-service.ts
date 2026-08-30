@@ -44,11 +44,11 @@ export class AgentRunQueryService {
     return this.summarize(await this.roles.listAgentRuns())
   }
 
-  /** managerSessionId 必填(复审整改复验:调用方声明必须校验,不从 row 反推 owner)。 */
+  /** managerSessionId 必填(codex 整改复验:调用方声明必须校验,不从 row 反推 owner)。 */
   async getDetail(runId: string, managerSessionId: string): Promise<AgentRunDetail> {
     const row = await this.roles.getAgentRun(runId)
     if (!row) throw new AgentRunOwnershipError()
-    // 调用方 ownership(阶段复审整改):不只确认 owner 是合法 manager,
+    // 调用方 ownership(codex 阶段复审整改):不只确认 owner 是合法 manager,
     // 还要求调用方声明的 manager 会话与 run 归属一致(对齐 getGraph/interrupt 边界)
     await this.assertManagerSession(managerSessionId)
     if (row.managerSessionId !== managerSessionId) throw new AgentRunOwnershipError()

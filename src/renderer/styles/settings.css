@@ -368,8 +368,50 @@
   font-size: 12px;
 }
 
-/* ============ A-14 总管工作区面板 ============ */
-.workspace-panel {
+/* ============ 角色默认模型(A-24) ============ */
+.role-model-panel {
+  margin-top: 14px;
+}
+.role-model-empty {
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.role-model-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.role-model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* 角色名一行截断,全文看 title(窄窗不顶破行) */
+.role-model-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.role-model-select {
+  flex: 0 1 auto;
+  max-width: 62%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 4px 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+/* ============ A-14 总管工作区面板 ============ */.workspace-panel {
   margin-top: 14px;
 }
 .workspace-current {

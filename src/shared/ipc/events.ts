@@ -1,5 +1,5 @@
 import type { ApprovalRequest } from '../domain/approval'
-import type { ToolExecutionInfo, ToolExecutionStatus } from '../domain/message'
+import type { CompactionNoticeMessage, ToolExecutionInfo, ToolExecutionStatus } from '../domain/message'
 
 /**
  * agent:event 推送事件——覆盖流式文本、工具状态、确认、错误、结束。
@@ -7,6 +7,15 @@ import type { ToolExecutionInfo, ToolExecutionStatus } from '../domain/message'
  */
 
 export type AgentPushEvent =
+  | {
+      readonly type: 'context_compacted'
+      readonly sessionId: string
+      readonly notice: CompactionNoticeMessage
+      readonly contextUsage: {
+        readonly usedTokens: number
+        readonly contextWindow: number
+      }
+    }
   | {
       readonly type: 'message_start'
       readonly sessionId: string

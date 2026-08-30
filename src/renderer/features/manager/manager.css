@@ -53,6 +53,9 @@
   gap: 8px;
   font-size: 12.5px;
   color: var(--muted);
+  /* A-27:协作链摘要钮(nowrap)窄窗挤不下时整体换行,不溢出卡片 */
+  flex-wrap: wrap;
+  min-width: 0;
 }
 .delegation-dot {
   width: 8px;
@@ -190,6 +193,80 @@
   word-break: break-word;
 }
 
+/* ============ 用量分项横条(A-25,0.5.0) ============ */
+/* 一根横条四段:输入/输出/缓存读/缓存写,复用使用统计五行色板前四色,色板零变动;
+   宽度按真实比例(flex-grow),不设最小段宽;两处共用(派活卡展开区/详情页顶部) */
+.token-segment-bar {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+}
+.token-segment-track {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  /* 空轨道底色;有段时被段完全覆盖,不露头 */
+  background: var(--ink-hover-04);
+}
+.token-segment-track.is-empty {
+  border: 1px dashed var(--line);
+}
+.token-segment {
+  min-width: 0;
+  height: 100%;
+}
+.token-segment-input {
+  background: var(--usage-model-1);
+}
+.token-segment-output {
+  background: var(--usage-model-2);
+}
+.token-segment-cache-read {
+  background: var(--usage-model-3);
+}
+.token-segment-cache-write {
+  background: var(--usage-model-4);
+}
+/* 键盘聚焦整根横条时出全文 tooltip(纸面小签,全部走既有 token);
+   绝对定位不扩大布局,track 的 overflow:hidden 裁不到它(挂在 wrapper 上) */
+.token-segment-bar::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  white-space: normal;
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-soft);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s cubic-bezier(.2, 0, 0, 1);
+  z-index: 20;
+}
+/* hover 与键盘聚焦同款显示(0.5.0 视觉验收:原来只写了 :focus-visible,悬停恒 opacity 0) */
+.token-segment-bar:hover::after,
+.token-segment-bar:focus-visible::after {
+  opacity: 1;
+}
+/* 展开区里横条占满标签右侧剩余宽度,与文字行垂直居中、留一点纵向呼吸 */
+.delegation-field .token-segment-bar {
+  flex: 1;
+  align-self: center;
+  margin: 3px 0;
+}
+
 /* ============ internal 只读详情整页(0.3.0 批 2b,PLAN §10.3) ============ */
 /* 与守则页/统计页同骨架:窄栏居中、头部一行、正文复用 MessageList 滚动区,无 Composer */
 .run-detail-pane {
@@ -240,6 +317,12 @@
   font-size: 12.5px;
   color: var(--muted);
   flex-wrap: wrap;
+}
+/* 用量分项横条(A-25):顶部用量文字行下方,窄栏通宽,随 860px 栏自然收 */
+.run-detail-usage-bar {
+  width: 100%;
+  min-width: 0;
+  max-width: 420px;
 }
 .run-detail-state {
   border: 1px solid var(--line);
@@ -594,4 +677,421 @@ button.run-node:focus-visible,
 }
 .delegation-interrupt-text {
   color: color-mix(in srgb, var(--accent) 80%, var(--ink));
+}
+
+/* ============ 协作链常驻面板(A-28,0.5.0 第三批) ============ */
+/* 外壳:右上锚定浮层,三态共用;FLIP 动画只动 transform/opacity(JS 起 WAAPI),
+   这里不写任何 CSS transition 防打架。z-index 8:压消息流,让确认卡浮层(10)。 */
+.collab-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 8;
+  max-width: calc(100% - 24px);
+}
+/* 提醒条在顶部时面板让位一行(:has 纯 CSS,不进 JS 状态机;提醒关掉自动回顶) */
+.chat-view:has(> .reminder-stack) .collab-panel {
+  top: 54px;
+}
+/* 详情态宽度放外壳(百分比相对 .chat-view 这个已定位祖先,确定可算;
+   若挂在 shrink-to-fit 外壳内的子元素上,40% 会循环解析);
+   宽底 440px(0.5.0 视觉验收):左栏流程 196px 之外,右栏 tablist 要放下一行两个 tab 不裁字 */
+.collab-panel.is-detail {
+  bottom: 12px;
+  width: clamp(440px, 40%, 560px);
+  display: flex;
+  flex-direction: column;
+}
+.collab-panel-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* 三态卡片同一族(与族谱/派活卡同笔法):1.5px 笔触边 + 非对称圆角 + 顶边两端收笔的笔触线。
+   面板浮在消息流上面(背后常有文字),底下垫一层纯色宣纸再叠 85% 卡片面:
+   整体不透背后的字,色相与卡片族一致,零新增色值 */
+.collab-mini,
+.collab-flowpanel,
+.collab-detail {
+  position: relative;
+  background: linear-gradient(var(--surface-strong), var(--surface-strong)), var(--paper);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  border-radius: 3px 6px 4px 7px;
+  box-shadow: var(--shadow-soft);
+}
+.collab-mini::before,
+.collab-flowpanel::before,
+.collab-detail::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 2px 3px 2px 4px;
+  background: linear-gradient(90deg, transparent 0, var(--line) 9%, var(--line) 91%, transparent 100%);
+  transform: rotate(-0.25deg);
+  pointer-events: none;
+}
+
+/* —— 小窗态:紧凑小卡,整卡可点展开 —— */
+.collab-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 184px;
+  max-width: 264px;
+  padding: 8px 12px;
+  font-family: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+.collab-mini:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.collab-mini-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.collab-mini-chevron {
+  color: var(--muted);
+  font-size: 12px;
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+.collab-mini:hover .collab-mini-chevron {
+  transform: translateX(2px);
+}
+.collab-mini-line {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  flex: 0 0 auto;
+}
+.collab-aggregate {
+  font-size: 11.5px;
+  min-width: 0;
+}
+.collab-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px 6px;
+  flex: 0 0 auto;
+}
+.collab-panel-foot {
+  display: flex;
+  gap: 8px;
+  padding: 6px 12px 10px;
+  border-top: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+/* —— 面板态:纵向流程小面板 —— */
+.collab-flowpanel {
+  width: 284px;
+  max-height: min(52vh, 460px);
+  display: flex;
+  flex-direction: column;
+}
+.collab-flowpanel-body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 2px 12px 8px;
+}
+
+/* —— 详情态:右侧详情页(宽屏约 40%),对话区压窄但不离开 —— */
+.collab-detail {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 对话区压窄(线框图:压窄但不离开):详情态时让出面板同宽 + 两侧 12px 间隔,
+   消息列/输入区/提醒条都收进剩余宽度,发送钮不被面板盖住;
+   窄窗(<1000px)详情铺满 main-pane,对话区在面板底下,不压;
+   让位表达式与 .collab-panel.is-detail 宽度同源(改一处必须同步另一处) */
+.chat-view.collab-detail-open > :not(.collab-panel) {
+  margin-right: calc(clamp(440px, 40%, 560px) + 24px);
+}
+/* 对话区让位/回宽与面板 FLIP 同期同曲线(240ms):展开压窄、收起回宽对称,不硬切;
+   reduced-motion 直切(与 collab-panel-model.panelTransitionKind 同决策) */
+.chat-view > :not(.collab-panel) {
+  transition: margin-right 0.24s cubic-bezier(0.2, 0, 0, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-view > :not(.collab-panel) {
+    transition: none;
+  }
+}
+.collab-detail-close {
+  margin-left: auto;
+}
+/* 窄窗流程抽屉开关:宽屏隐藏(左栏常驻),窄屏出按钮 */
+.collab-flow-drawer-toggle {
+  display: none;
+  margin: 0 12px 6px;
+  align-self: flex-start;
+}
+.collab-detail-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.collab-flow-pane {
+  flex: 0 0 196px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-right: 1px solid var(--line);
+}
+.collab-detail-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* tab 条:浏览器 tab 式,一个角色一个;选中=朱砂下划一笔,克制不整 tab 上色 */
+.collab-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 10px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  flex: 0 0 auto;
+}
+.collab-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px 7px;
+  /* 允许收窄(0.5.0 视觉验收):tablist 放不下时 tab 先收状态短语(省略号收尾),
+     不在容器右缘硬切字;tab 更多时 overflow-x 滚动兜底 */
+  flex: 0 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-family: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s cubic-bezier(0.2, 0, 0, 1), border-color 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+.collab-tab:hover {
+  color: var(--ink);
+}
+.collab-tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+.collab-tab:focus-visible {
+  outline: none;
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+.collab-tab-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.collab-tab-state {
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 收窄时状态短语先让位,角色名尽量保全 */
+  flex-shrink: 3;
+}
+
+/* 过程区:消息流吃满剩余高度 */
+.run-process-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+.run-process-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+.run-process-usage-bar {
+  width: 100%;
+  min-width: 0;
+  max-width: 320px;
+  flex: 0 0 auto;
+}
+.run-process-pane .message-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 12px;
+}
+
+/* —— 纵向流程图:左侧时间轴轨道 + 节点行;连接行表达交接,窄面板不画测量线 —— */
+.collab-flow {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.collab-flow-layer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 并行同层:虚线左栏收成一组,小标「并行」点明关系 */
+.collab-flow-layer.is-parallel {
+  border-left: 1.5px dashed color-mix(in srgb, var(--ink) 26%, transparent);
+  padding-left: 8px;
+  margin-left: 3px;
+  gap: 4px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+.collab-flow-parallel-tag {
+  font-size: 10.5px;
+  letter-spacing: 2px;
+}
+.collab-flow-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 交接连接行:一小段竖笔 + 文案(「来自:账房(交棒)」/「依赖:账房」) */
+.collab-flow-upstream {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding-left: 5px;
+}
+.collab-flow-upstream::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 2px;
+  height: 12px;
+  border-radius: 2px 3px 2px 4px;
+  background: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+/* 交棒=真接力,墨色重一笔(与族谱 handoff 边同语义) */
+.collab-flow-upstream.is-handoff {
+  color: color-mix(in srgb, var(--ink) 78%, var(--muted));
+}
+.collab-flow-upstream.is-handoff::before {
+  background: color-mix(in srgb, var(--ink) 58%, transparent);
+}
+/* 节点行:状态点 + 角色名 + 状态 + 追加/时长;可点态(详情栏)hover 落朱砂边。
+   窄栏(详情态左栏 196px)放不下全部片段时允许折行:角色名先保 4 字,
+   状态/追加/时长折到第二行右对齐,名字不折到只剩一个字 */
+.collab-flow-node {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  row-gap: 1px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+button.collab-flow-node {
+  cursor: pointer;
+  transition: border-color 0.15s cubic-bezier(0.2, 0, 0, 1), background-color 0.15s cubic-bezier(0.2, 0, 0, 1);
+}
+button.collab-flow-node:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--ink-hover-04);
+}
+.collab-flow-node.is-current {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.collab-flow-name {
+  font-weight: 600;
+  /* 折行策略下名字先占足 4 字宽,再让meta片段;超长名才省略号 */
+  flex: 1 0 4em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-flow-state {
+  font-size: 11.5px;
+  flex: 0 0 auto;
+}
+.collab-flow-followup {
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.collab-flow-elapsed {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* —— 窄窗(<1000px):详情态铺满 main-pane 可用宽度,左栏流程收成顶部抽屉 —— */
+@media (max-width: 999px) {
+  .collab-panel.is-detail {
+    left: 12px;
+    width: auto;
+    /* 覆盖形态只盖消息区,不盖输入区(0.5.0 视觉验收 P1):960 最小窗下 composer 也要
+       可见可点。底边让出输入区实测高度(--composer-area-h 由 ChatView 用 ResizeObserver
+       实时写入,随草稿行数自适应;未测到时按一行草稿的兜底高)。 */
+    bottom: calc(var(--composer-area-h, 118px) + 8px);
+  }
+  .chat-view.collab-detail-open > :not(.collab-panel) {
+    margin-right: 0;
+  }
+  .collab-flow-drawer-toggle {
+    display: inline-flex;
+  }
+  .collab-detail-body {
+    flex-direction: column;
+  }
+  .collab-flow-pane {
+    display: none;
+    flex: 0 0 auto;
+    max-height: 38%;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .collab-detail-body.flow-open .collab-flow-pane {
+    display: block;
+  }
 }

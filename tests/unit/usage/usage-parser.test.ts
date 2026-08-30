@@ -3,8 +3,9 @@ import {
   currentIanaTimeZone,
   localDateFor,
   parseAssistantUsage,
+  parseCompactionUsage,
 } from '../../../src/main/usage/usage-parser'
-import type { AgentMessage } from '@earendil-works/pi-agent-core'
+import type { AgentMessage, CompactionEntry } from '@earendil-works/pi-agent-core'
 
 /** 构造带 usage 的 assistant 消息(覆盖 pi AssistantMessage 关键字段)。 */
 function assistantMessage(overrides: Record<string, unknown> = {}): AgentMessage {
@@ -141,5 +142,33 @@ describe('usage-parser:时区归日', () => {
     const tz = currentIanaTimeZone()
     expect(typeof tz).toBe('string')
     expect(tz.length).toBeGreaterThan(0)
+  })
+})
+
+describe('usage-parser:compaction usage', () => {
+  it('从 details.daweige 恢复模型快照并固定 stop_reason=compaction', () => {
+    const entry: CompactionEntry = {
+      type: 'compaction', id: 'c1', seq: 1, parentId: null,
+      timestamp: Date.UTC(2026, 7, 24, 2), summary: '摘要', retainedTail: [], tokensBefore: 1000,
+      usage: {
+        input: 80, output: 20, cacheRead: 5, cacheWrite: 0, totalTokens: 105,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      details: { daweige: { providerId: 'zai', modelId: 'glm-5.3' } },
+    }
+    expect(parseCompactionUsage({
+      sourceEntryId: 's1:c1', sessionId: 's1', entry, timeZone: 'Asia/Shanghai',
+    })).toMatchObject({
+      sourceEntryId: 's1:c1', provider: 'zai', modelId: 'glm-5.3',
+      totalTokens: 105, stopReason: 'compaction',
+    })
+  })
+
+  it('缺模型快照或 usage 时拒绝，不伪造统计', () => {
+    const base: CompactionEntry = {
+      type: 'compaction', id: 'c1', seq: 1, parentId: null, timestamp: 1,
+      summary: '摘要', retainedTail: [], tokensBefore: 1000,
+    }
+    expect(parseCompactionUsage({ sourceEntryId: 'x', sessionId: 's', entry: base, timeZone: 'UTC' })).toBeUndefined()
   })
 })

@@ -7,10 +7,19 @@ interface ProviderSelectorProps {
   /** 启用池(settings.enabledModels);undefined/空=老数据,面板回退只显示当前一项并引导去设置页。 */
   readonly enabledModels?: readonly ProviderSelection[] | undefined
   readonly onSelect: (selection: ProviderSelection) => void
+  /**
+   * 「存为该角色默认」入口(A-24):当前会话属于某个角色(含小柊)时才出现;
+   * 当前选择不在显式启用池时禁用并提示先入池。无角色会话(undefined)不渲染。
+   */
+  readonly saveAsRoleDefault?: {
+    readonly roleName: string
+    readonly canSave: boolean
+    readonly onSave: () => void
+  }
 }
 
 /** 对话区右下角模型选择器:按钮显示当前模型 id,点击向上弹出「启用池」面板(按厂商分组)。 */
-export function ProviderSelector({ providers, selection, enabledModels, onSelect }: ProviderSelectorProps) {
+export function ProviderSelector({ providers, selection, enabledModels, onSelect, saveAsRoleDefault }: ProviderSelectorProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const current = providers.find((p) => p.id === selection.providerId)
@@ -118,6 +127,24 @@ export function ProviderSelector({ providers, selection, enabledModels, onSelect
               })}
             </Fragment>
           ))}
+          {saveAsRoleDefault !== undefined && (
+            <div className="model-switch-save">
+              <button
+                type="button"
+                className="model-switch-save-btn"
+                disabled={!saveAsRoleDefault.canSave}
+                onClick={() => {
+                  setOpen(false)
+                  saveAsRoleDefault.onSave()
+                }}
+              >
+                存为「{saveAsRoleDefault.roleName}」的默认
+              </button>
+              {!saveAsRoleDefault.canSave && (
+                <div className="model-switch-save-tip">当前模型不在常用池,先到设置页勾选入池</div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

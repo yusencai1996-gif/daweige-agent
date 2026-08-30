@@ -1,6 +1,6 @@
 /**
  * 飞白皴笔 · 公共形态层(0.4.0 B1)
- * 蓝本:shuimo-frontend-design option-a/shape.css + frontend-reference A 主题(已获授权直抄适配)。
+ * 蓝本:shuimo-frontend-design option-a/shape.css + frontend-reference A 主题(用户授权直抄适配)。
  * 三要素:不规则笔触(非对称圆角+手写倾角)/ 飞白漏纸(条纹叠层)/ 笔锋提按(渐变拼笔形)。
  * 红线:只动形不动色——本文件所有颜色一律 color-mix 派生自 tokens.css 既有六值,零新色;
  *       不改 DOM/逻辑,形态规则集中在此、最后加载(main.tsx),同特异性下覆盖基线样式。

@@ -350,7 +350,7 @@ describe('ManagerOrchestrator 派活主链', () => {
     }
   })
 
-  it('并行调度:不同根的两条派活同时 running;同根第二条排队,首条完成后自动补位(复审整改)', async () => {
+  it('并行调度:不同根的两条派活同时 running;同根第二条排队,首条完成后自动补位(codex 复验整改)', async () => {
     // 第二个 worker 挂互不重叠的根(并行判定看 canonical roots,不看角色)
     const mkdirSync = (await import('node:fs')).mkdirSync
     const otherWorkspace = join(dir, 'workspace-other')
@@ -468,7 +468,7 @@ describe('ManagerOrchestrator 派活主链', () => {
     const runs = await roles.listAgentRuns()
     const second = runs.find((run) => run.parentRunId === firstRun.runId)!
     expect(second).toBeTruthy()
-    // 下游信封:DB 权威事实全集(summary+定论+数据明细+产物+manager 结论;阶段复审整改+A-19)
+    // 下游信封:DB 权威事实全集(summary+定论+数据明细+产物+manager 结论;codex 阶段复审整改+A-19)
     expect(second.envelope.managerConclusions).toEqual([
       '「小编」的结果摘要:账目已汇总',
       '「小编」的定论:门店销售总计 20370',
@@ -548,7 +548,7 @@ describe('ManagerOrchestrator 派活主链', () => {
     ).rejects.toThrow('同一条协作链')
   })
 
-  it('getDetail ownership:两个都合法的 manager 会话,run 只归其一(复审整改复验)', async () => {
+  it('getDetail ownership:两个都合法的 manager 会话,run 只归其一(codex 整改复验)', async () => {
     await seedAwaitingLikeRun()
     // 第二个真实绑定的 manager 会话(合法,但 run 不归它)
     await roles.bindSession({
@@ -569,7 +569,7 @@ describe('ManagerOrchestrator 派活主链', () => {
     })
   })
 
-  it('打断 awaiting-approval run:未决派活确认卡立即收敛为拒绝,不挂到超时(阶段复审整改)', async () => {
+  it('打断 awaiting-approval run:未决派活确认卡立即收敛为拒绝,不挂到超时(codex 阶段复审整改)', async () => {
     // spawn 挂起等确认;此刻打断 awaiting run
     const spawning = orchestrator.spawn('manager-session', input())
     const approval = await nextDelegationApproval()

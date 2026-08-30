@@ -83,3 +83,16 @@ export function effectiveEnabledModels(settings: Settings): readonly ProviderSel
   const pool = settings.enabledModels ?? []
   return pool.length > 0 ? pool : [settings.providerSelection]
 }
+
+/**
+ * 「存为该角色默认」可用性(A-24):会话属于某个角色(含小柊)且当前选择在显式启用池里。
+ * 不在池时 UI 禁用并提示先入池——角色默认只允许引用显式启用池中的模型(PLAN §1.1-3)。
+ */
+export function canSaveAsRoleDefault(
+  settings: Settings,
+  roleId: string | null,
+  selection: ProviderSelection,
+): boolean {
+  if (roleId === null) return false
+  return settings.enabledModels?.some((item) => sameModel(item, selection)) ?? false
+}

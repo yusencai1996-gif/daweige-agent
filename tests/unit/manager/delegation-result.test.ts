@@ -88,7 +88,7 @@ describe('delegation result parser', () => {
     expect(legacy.detailData).toBeUndefined()
   })
 
-  it('A-19 detailData 超长(>4000)/类型错/显式 null fail closed(复审补)', () => {
+  it('A-19 detailData 超长(>4000)/类型错/显式 null fail closed(独立复审补)', () => {
     const tooLong = parseDelegationResult(
       block({
         summary: 'x',

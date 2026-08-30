@@ -54,6 +54,7 @@ function makeService(guardrailsGetter: () => string, useRoleBinding: boolean) {
         capturedPrompts.push(String((context as { systemPrompt?: unknown }).systemPrompt ?? ''))
         return models.streamSimple(m, context, options)
       },
+      completeSimple: (m, context, options) => models.completeSimple(m, context, options),
     },
     sessionService,
     emitEvent: (e) => events.push(e),

@@ -247,7 +247,7 @@ export class SessionService {
       this.openSessions.delete(sessionId)
       await this.repository.delete(meta)
     }
-    // 无论 pi 行是否还在,binding 都幂等清理(复审 S-02:
+    // 无论 pi 行是否还在,binding 都幂等清理(独立复审 S-02:
     // pi 删除成功但 binding 清理失败被吞时,不能留永久孤儿计数)
     await this.roleRepository?.deleteBinding(sessionId).catch((err) => {
       console.error('[sessions] 会话绑定清理失败(可能残留角色计数):', err instanceof Error ? err.message : err)
@@ -282,6 +282,21 @@ export class SessionService {
     const binding = await this.roleRepository.getBinding(sessionId)
     if (binding?.visibility === 'internal') {
       throw new InternalSessionAccessError()
+    }
+  }
+
+  /** A-29 自动压缩覆盖闸：roles binding 与 pi appMeta 任一标 internal 都关闭。 */
+  async isUserVisibleSession(sessionId: string): Promise<boolean> {
+    const meta = await this.findMeta(sessionId)
+    if (!meta || readAppMeta(meta)?.internal === true) return false
+    if (!this.rolesActive || !this.roleRepository) return true
+    try {
+      const binding = await this.roleRepository.getBinding(sessionId)
+      // 迁移前无 binding 的普通会话仍按 pi 非 internal 标记兼容；显式 internal 永不压缩。
+      return binding?.visibility !== 'internal'
+    } catch {
+      // 角色库降级时仍由 pi 的纵深标记 fail-closed 拦 internal。
+      return true
     }
   }
 

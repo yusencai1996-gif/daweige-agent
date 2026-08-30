@@ -11,7 +11,7 @@ import type { MemoryEntry, MemoryDate } from '../../shared/domain/memory'
 
 export class MemoryStore {
   private cache: MemoryEntry[] | undefined
-  /** 写操作串行队列(复审阻断项:并发 add/remove 共用固定 .tmp 会互相覆盖/丢数据)。 */
+  /** 写操作串行队列(独立复审阻断项:并发 add/remove 共用固定 .tmp 会互相覆盖/丢数据)。 */
   private writeChain: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly filePath: string) {}

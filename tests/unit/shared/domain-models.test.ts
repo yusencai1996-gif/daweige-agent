@@ -170,9 +170,9 @@ describe('领域模型:序列化/反序列化', () => {
 
 describe('领域模型:判别联合穷尽性', () => {
   it('ChatMessage 的 kind+role 联合覆盖全部已知形态', () => {
-    const kinds: ChatMessage['kind'][] = ['chat', 'error']
+    const kinds: ChatMessage['kind'][] = ['chat', 'error', 'compaction']
     const roles: Extract<ChatMessage, { kind: 'chat' }>['role'][] = ['user', 'assistant']
-    expect(kinds).toHaveLength(2)
+    expect(kinds).toHaveLength(3)
     expect(roles).toHaveLength(2)
   })
 
@@ -185,6 +185,8 @@ describe('领域模型:判别联合穷尽性', () => {
           return 'AI'
         case 'error':
           return '出错了'
+        case 'system':
+          return '上下文摘要'
         default: {
           // 若 ChatMessage 新增 role 而这里没处理,m.role 不再是 never,编译报错
           const exhaustive: never = m

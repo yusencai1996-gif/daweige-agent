@@ -1,10 +1,17 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createModels } from '@earendil-works/pi-ai'
-import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux'
-import { AgentService, AgentBusyError } from '../../../src/main/agent/agent-service'
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
+import { Type } from 'typebox'
+import {
+  AgentService,
+  AgentBusyError,
+  type AgentServiceDeps,
+} from '../../../src/main/agent/agent-service'
+import type { CompactionRunner } from '../../../src/main/agent/compaction-service'
 import { SessionRepository } from '../../../src/main/storage/session-repository'
 import { SessionService } from '../../../src/main/storage/session-service'
 import { UsageStore } from '../../../src/main/usage/usage-store'
@@ -39,14 +46,24 @@ interface Ctx {
   sessionService: SessionService
   repo: SessionRepository
   selection: ProviderSelection
+  models: ReturnType<typeof createModels>
+  faux: ReturnType<typeof fauxProvider>
 }
 
 async function setup(
   responses: Parameters<ReturnType<typeof fauxProvider>['setResponses']>[0],
   tokensPerSecond = 10000,
   usageRecorder?: UsageRecorder,
+  compactionService?: CompactionRunner,
+  contextWindow?: number,
+  toolchain?: AgentServiceDeps['toolchain'],
 ): Promise<Ctx> {
-  const faux = fauxProvider({ tokensPerSecond })
+  const faux = fauxProvider({
+    tokensPerSecond,
+    ...(contextWindow
+      ? { models: [{ id: 'faux-1', contextWindow, maxTokens: 4096 }] }
+      : {}),
+  })
   faux.setResponses(responses)
   const models = createModels()
   models.setProvider(faux.provider)
@@ -62,16 +79,21 @@ async function setup(
         return fauxModel
       },
       streamSimple: (model, context, options) => models.streamSimple(model, context, options),
+      completeSimple: (model, context, options) => models.completeSimple(model, context, options),
     },
     sessionService,
     emitEvent: (e) => events.push(e),
     usageRecorder,
+    ...(compactionService ? { compactionService } : {}),
+    ...(toolchain ? { toolchain } : {}),
   })
   return {
     agentService,
     sessionService,
     repo,
     selection: { providerId: 'kimi-coding', modelId: fauxModel.id },
+    models,
+    faux,
   }
 }
 
@@ -208,21 +230,117 @@ describe('AgentService(faux 流式)', () => {
 
     await ctx.repo.close()
   })
+
+  it('压缩期间第二次 send 被 busy 门拒绝，abort 同时取消压缩', async () => {
+    let started = false
+    let aborted = false
+    const compaction: CompactionRunner = {
+      execute: async (_target, signal) => {
+        started = true
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+        aborted = true
+        throw new DOMException('aborted', 'AbortError')
+      },
+    }
+    const ctx = await setup([fauxAssistantMessage('到达压缩边界')], 10000, undefined, compaction, 10_000)
+    const sid = await createSession(ctx)
+
+    await ctx.agentService.send(sid, '长上下文'.repeat(70_000), ctx.selection)
+    await waitFor(() => started)
+    expect(ctx.agentService.isSessionBusy(sid)).toBe(true)
+    await expect(ctx.agentService.send(sid, '第二条', ctx.selection)).rejects.toThrow(AgentBusyError)
+
+    ctx.agentService.abortSession(sid)
+    await waitFor(() => aborted)
+    await ctx.agentService.drain()
+    await ctx.repo.close()
+  })
+
+  it('internal AgentRun 会话即使超阈值也不启用压缩', async () => {
+    const execute = vi.fn()
+    const ctx = await setup(
+      [fauxAssistantMessage('内部任务完成')],
+      10000,
+      undefined,
+      { execute },
+    )
+    const detail = await ctx.sessionService.createInternalSession({
+      roleId: roleFx.roleId,
+      workspacePath: roleFx.workspaceDir,
+      providerId: 'kimi-coding',
+      modelId: ctx.selection.modelId,
+    })
+    const result = await ctx.agentService.run({
+      sessionId: detail.summary.id,
+      text: '内部长上下文'.repeat(70_000),
+      selection: ctx.selection,
+      updateTitle: false,
+    })
+    expect(result.status).toBe('completed')
+    expect(execute).not.toHaveBeenCalled()
+    await ctx.repo.close()
+  })
+
+  it('工具链在 turn 边界被截停后，压缩成功调用 continue 补出最终结论', async () => {
+    const executeCompaction = vi.fn<CompactionRunner['execute']>(async (target) => {
+      const tail = target.messages.at(-1)
+      expect(tail?.role).toBe('toolResult')
+      target.replaceMessages([
+        { role: 'compactionSummary', summary: '已执行 echo_tool', tokensBefore: 120_000, timestamp: 10 },
+        tail!,
+      ])
+      return {
+        entry: {
+          type: 'compaction', id: 'fake-c1', seq: 1, parentId: null, timestamp: 10,
+          summary: '已执行 echo_tool', retainedTail: [tail!], tokensBefore: 120_000,
+        },
+        tokensAfter: 100,
+      }
+    })
+    const ctx = await setup(
+      [
+        fauxAssistantMessage(fauxToolCall('echo_tool', {})),
+        fauxAssistantMessage('工具完成后的最终结论'),
+      ],
+      10000,
+      undefined,
+      { execute: executeCompaction },
+      10_000,
+      async () => ({
+        tools: [{
+          name: 'echo_tool', label: '回声', description: '测试工具',
+          parameters: Type.Object({}, { additionalProperties: false }),
+          execute: async () => ({ content: [{ type: 'text' as const, text: 'echo ok' }], details: {} }),
+        }],
+      }),
+    )
+    const sid = await createSession(ctx)
+    const result = await ctx.agentService.run({
+      sessionId: sid,
+      text: '长工具任务'.repeat(70_000),
+      selection: ctx.selection,
+    })
+    expect(result).toMatchObject({ status: 'completed', finalText: '工具完成后的最终结论' })
+    expect(executeCompaction).toHaveBeenCalledTimes(1)
+    expect(ctx.faux.state.callCount).toBe(2)
+    await ctx.repo.close()
+  })
 })
 
 describe('AgentService(使用统计挂钩)', () => {
   /** 挂真实 UsageService 的上下文(usage 库独立于会话库)。 */
   async function setupWithUsage(
     responses: Parameters<ReturnType<typeof fauxProvider>['setResponses']>[0],
+    contextWindow?: number,
   ) {
     const usageEvents: AgentPushEvent[] = []
     const usageStore = new UsageStore(join(dir, 'usage.sqlite'))
     const usageService = new UsageService(usageStore, {
       emitEvent: (e) => usageEvents.push(e),
-      iterateMessageEntries: () => [], // 本测试不回填
+      iterateUsageEntries: () => [], // 本测试不回填
       logError: () => {},
     })
-    const ctx = await setup(responses, 10000, usageService)
+    const ctx = await setup(responses, 10000, usageService, undefined, contextWindow)
     return { ...ctx, usageService, usageStore, usageEvents }
   }
 
@@ -237,8 +355,8 @@ describe('AgentService(使用统计挂钩)', () => {
     expect(dashboard.hasData).toBe(true)
     expect(dashboard.overview.totalTokens).toBeGreaterThan(0)
     expect(dashboard.models.items).toHaveLength(1)
-    // user+assistant 两条消息都进了跨度
-    expect(dashboard.overview.longestSessionDurationMs).toBeGreaterThanOrEqual(0)
+    // 单条 usage event 的活跃时长固定为 0；不再混入 user message 首末跨度。
+    expect(dashboard.overview.longestActiveSessionDurationMs).toBe(0)
 
     await ctx.usageStore.drainAndClose()
     await ctx.repo.close()
@@ -249,9 +367,7 @@ describe('AgentService(使用统计挂钩)', () => {
       recordAssistantMessage() {
         throw new Error('boom')
       },
-      recordMessageSpan() {
-        throw new Error('boom')
-      },
+      recordCompactionEntry() {},
     }
     const ctx = await setup([fauxAssistantMessage('异常旁路下的正常回复')], 10000, boom)
     const sid = await createSession(ctx)
@@ -280,7 +396,7 @@ describe('AgentService(使用统计挂钩)', () => {
     const usageStore = new UsageStore(join(dir, 'usage.sqlite'))
     const usageService = new UsageService(usageStore, {
       emitEvent: () => {},
-      iterateMessageEntries: () => repo2.iterateMessageEntries(),
+      iterateUsageEntries: () => repo2.iterateUsageEntries(),
       logError: (msg, err) => console.error('[backfill-test]', msg, err),
     })
     usageService.startBackfill()
@@ -288,11 +404,11 @@ describe('AgentService(使用统计挂钩)', () => {
     expect(dashboard.hasData).toBe(true)
     expect(dashboard.overview.totalTokens).toBeGreaterThan(0)
 
-    // 回填幂等:全新 service/store 重跑同一会话库,总量不翻倍(复审测试缺口)
+    // 回填幂等:全新 service/store 重跑同一会话库,总量不翻倍(独立复审测试缺口)
     const usageStore2 = new UsageStore(join(dir, 'usage.sqlite'))
     const usageService2 = new UsageService(usageStore2, {
       emitEvent: () => {},
-      iterateMessageEntries: () => repo2.iterateMessageEntries(),
+      iterateUsageEntries: () => repo2.iterateUsageEntries(),
       logError: (msg, err) => console.error('[backfill-test-2]', msg, err),
     })
     usageService2.startBackfill()
@@ -304,7 +420,7 @@ describe('AgentService(使用统计挂钩)', () => {
     await repo2.close()
   })
 
-  it('回填遇坏行只丢自己,不阻断后续行(复审 B-02)', async () => {
+  it('回填遇坏行只丢自己,不阻断后续行(独立复审 B-02)', async () => {
     const store = new UsageStore(join(dir, 'usage.sqlite'))
     const at = Date.UTC(2026, 7, 24, 2)
     const poison = {
@@ -325,9 +441,9 @@ describe('AgentService(使用统计挂钩)', () => {
     const errors: string[] = []
     const service = new UsageService(store, {
       emitEvent: () => {},
-      iterateMessageEntries: () => [
-        { sessionId: 's1', entryId: 'bad', seq: 1, timestamp: at - 1000, message: poison },
-        { sessionId: 's1', entryId: 'good', seq: 2, timestamp: at, message: good },
+      iterateUsageEntries: () => [
+        { type: 'message' as const, sessionId: 's1', entryId: 'bad', seq: 1, timestamp: at - 1000, message: poison },
+        { type: 'message' as const, sessionId: 's1', entryId: 'good', seq: 2, timestamp: at, message: good },
       ],
       logError: (msg) => errors.push(msg),
     })
@@ -339,4 +455,106 @@ describe('AgentService(使用统计挂钩)', () => {
     expect(errors.length).toBe(1)
     await store.drainAndClose()
   })
+
+  it('长会话自动压缩、SQLite 重开恢复摘要，compaction usage live/backfill 幂等', async () => {
+    const usagePath = join(dir, 'usage.sqlite')
+    const ctx = await setupWithUsage([
+      fauxAssistantMessage('本轮先完成'),
+      fauxAssistantMessage('## Goal\n保留关键事实：编号 DWG-29。'),
+      fauxAssistantMessage('重启后仍按摘要继续'),
+    ], 131_072)
+    const sid = await createSession(ctx)
+    const piSession = await ctx.sessionService.openPiSession(sid)
+
+    // 多个完整 turn：总上下文超 80%，同时保证 pi 能按 turn 边界保留约 20k tail。
+    for (let i = 0; i < 14; i++) {
+      await piSession.appendMessage({
+        role: 'user', content: `历史问题${i}:DWG-29:` + '甲'.repeat(20_000), timestamp: i * 2 + 1,
+      })
+      const historical = fauxAssistantMessage(`历史答复${i}:` + '乙'.repeat(20_000), {
+        timestamp: i * 2 + 2,
+      })
+      // fauxAssistantMessage 会带 errorMessage/deferred 等 undefined 字段,pi 落库严格 JSON 校验会拒;剥掉
+      await piSession.appendMessage(JSON.parse(JSON.stringify(historical)) as typeof historical)
+    }
+
+    const result = await ctx.agentService.run({
+      sessionId: sid,
+      text: '请记住编号并继续',
+      selection: ctx.selection,
+    })
+    expect(result.status).toBe('completed')
+    await waitFor(() => events.some((event) => event.type === 'context_compacted'))
+    await waitFor(() => ctx.usageEvents.filter((event) => event.type === 'usage_updated').length >= 2)
+
+    const entries = await piSession.findEntriesOnBranch({ order: 'oldestFirst' })
+    const compactions = entries.filter((entry) => entry.type === 'compaction')
+    expect(compactions).toHaveLength(1)
+    const restoredUi = await ctx.agentService.restoreChatMessages(sid)
+    expect(restoredUi.some((message) => message.kind === 'compaction')).toBe(true)
+    expect(restoredUi.filter((message) => message.kind === 'chat').length).toBeGreaterThan(20)
+
+    const liveDb = new DatabaseSync(usagePath, { readOnly: true })
+    const liveCount = Number((liveDb.prepare(
+      `SELECT COUNT(*) AS count FROM usage_events WHERE stop_reason = 'compaction'`,
+    ).get() as { count: number }).count)
+    liveDb.close()
+    expect(liveCount).toBe(1)
+
+    // 真关闭旧 repository，再用新实例打开；模型收到的必须是摘要+tail，不是全部原历史。
+    ctx.agentService.disposeAgent(sid)
+    await ctx.repo.close()
+    const repo2 = new SessionRepository(join(dir, 'data', 'sessions.sqlite'))
+    await repo2.init()
+    const sessionService2 = new SessionService(repo2, roleFx.roleRepository, roleFx.roleService)
+    let restartContext: readonly unknown[] = []
+    const service2 = new AgentService({
+      models: {
+        getModel: () => ctx.faux.getModel(),
+        streamSimple: (model, context, options) => {
+          restartContext = context.messages
+          return ctx.models.streamSimple(model, context, options)
+        },
+        completeSimple: (model, context, options) => ctx.models.completeSimple(model, context, options),
+      },
+      sessionService: sessionService2,
+      emitEvent: () => {},
+    })
+    const restart = await service2.run({
+      sessionId: sid,
+      text: '重启后继续',
+      selection: ctx.selection,
+    })
+    expect(restart.status).toBe('completed')
+    // compactionSummary 经 convertToLlm 转成承载摘要文本的 user 消息(见 agent-service convertToLlm);
+    // 断言摘要事实(DWG-29)真的发给了模型——这是"重启后按摘要继续"的实质。
+    expect(
+      restartContext.some((message) => {
+        const m = message as { role?: string; content?: unknown }
+        return m.role === 'user' && typeof m.content === 'string' && m.content.includes('DWG-29')
+      }),
+    ).toBe(true)
+    expect(restartContext.length).toBeLessThan(entries.filter((entry) => entry.type === 'message').length)
+
+    // 关闭 live store 后重扫同一 sessions.sqlite，幂等主键保证 compaction 仍恰一条。
+    await ctx.usageService.drainAndClose()
+    const backfillStore = new UsageStore(usagePath)
+    const backfillService = new UsageService(backfillStore, {
+      emitEvent: () => {},
+      iterateUsageEntries: () => repo2.iterateUsageEntries(),
+      logError: (message, error) => console.error(message, error),
+    })
+    backfillService.startBackfill()
+    await backfillService.getDashboard()
+    const verifyDb = new DatabaseSync(usagePath, { readOnly: true })
+    const afterBackfill = Number((verifyDb.prepare(
+      `SELECT COUNT(*) AS count FROM usage_events WHERE stop_reason = 'compaction'`,
+    ).get() as { count: number }).count)
+    verifyDb.close()
+    expect(afterBackfill).toBe(1)
+
+    await backfillService.drainAndClose()
+    service2.disposeAgent(sid)
+    await repo2.close()
+  }, 30_000)
 })

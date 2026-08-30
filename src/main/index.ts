@@ -60,6 +60,7 @@ import { registerSessionHandlers } from './ipc/session-handlers'
 import { registerRoleHandlers } from './ipc/role-handlers'
 import { registerWorkspaceHandlers } from './ipc/workspace-handlers'
 import { registerMessageHandlers } from './ipc/message-handlers'
+import { resolveRoleModel } from '../shared/domain/model-selection'
 import { registerApprovalHandlers } from './ipc/approval-handlers'
 import { registerWindowHandlers } from './ipc/window-handlers'
 import { registerMemoryHandlers } from './ipc/memory-handlers'
@@ -121,6 +122,7 @@ let roleRepositoryRef: RoleRepository | undefined
 let approvalBrokerRef: ApprovalBroker | undefined
 let usageServiceRef: UsageService | undefined
 let managerOrchestratorRef: ManagerOrchestrator | undefined
+let agentServiceRef: AgentService | undefined
 let quitting = false
 
 app.whenReady().then(async () => {
@@ -170,7 +172,7 @@ app.whenReady().then(async () => {
     usageStore = new UsageStore(join(userData, 'data', 'usage.sqlite'))
     usageService = new UsageService(usageStore, {
       emitEvent: emitAgentEvent,
-      iterateMessageEntries: () => repo.iterateMessageEntries(),
+      iterateUsageEntries: () => repo.iterateUsageEntries(),
       logError: (message, error) =>
         console.error(
           `[usage] ${message}:`,
@@ -231,7 +233,7 @@ app.whenReady().then(async () => {
   const memoryStore = new MemoryStore(join(userData, 'data', 'memories.json'))
   const reminderService = new ReminderService(() => memoryStore.load())
   let managerOrchestrator: ManagerOrchestrator | undefined
-  // 工作区租约门(0.4.0 D,阶段复审阻断整改):普通/manager 会话的写与命令不得碰被占根
+  // 工作区租约门(0.4.0 D,codex 阶段复审阻断整改):普通/manager 会话的写与命令不得碰被占根
   const workspaceLeaseService = roleRepository ? new WorkspaceLeaseService(roleRepository) : undefined
   // command/collab E2E:faux 模型多步脚本(发起工具调用→收到结果后收尾)。
   // 只 fake 模型流与 OS spawn;agent loop/事件流/Policy/审批/工具编排全真。
@@ -295,6 +297,12 @@ app.whenReady().then(async () => {
             context: Parameters<typeof fauxModels.streamSimple>[1],
             options: Parameters<typeof fauxModels.streamSimple>[2],
           ) => fauxModels.streamSimple(model, context, options),
+          completeSimple: (
+            model: Parameters<typeof fauxModels.completeSimple>[0],
+            context: Parameters<typeof fauxModels.completeSimple>[1],
+            options: Parameters<typeof fauxModels.completeSimple>[2],
+          ) =>
+            fauxModels.completeSimple(model, context, options),
         }
       })()
     : undefined
@@ -307,6 +315,8 @@ app.whenReady().then(async () => {
         ),
       streamSimple: (model, context, options) =>
         providerRegistry.models.streamSimple(model, context, options),
+      completeSimple: (model, context, options) =>
+        providerRegistry.models.completeSimple(model, context, options),
     },
     sessionService,
     emitEvent: emitAgentEvent,
@@ -549,11 +559,11 @@ app.whenReady().then(async () => {
     usageRecorder: usageService
       ? {
           recordAssistantMessage: (input) => usageService?.recordAssistantMessage(input),
-          recordMessageSpan: (sessionId, atMs) =>
-            usageService?.recordMessageSpan(sessionId, atMs),
+          recordCompactionEntry: (input) => usageService?.recordCompactionEntry(input),
         }
       : undefined,
   })
+  agentServiceRef = agentService
 
   await Promise.all([credentialStore.init(), settingsStore.load(), sessionRepository.init()])
 
@@ -658,7 +668,7 @@ app.whenReady().then(async () => {
         worker: new WorkerRunner(turnRunner),
         query: agentRunQuery,
         userDataPath: userData,
-        selection: async () => (await settingsStore.load()).providerSelection,
+        selection: async (roleId) => resolveRoleModel(await settingsStore.load(), roleId).selection,
         emitEvent: emitAgentEvent,
         isPackaged: app.isPackaged,
       })
@@ -737,13 +747,13 @@ app.whenReady().then(async () => {
     manager: managerBootstrap,
   })
   registerCredentialHandlers(credentialStore, connectivityService)
-  registerSettingsHandlers(settingsStore)
+  registerSettingsHandlers(settingsStore, roleRepository)
   // 0.4.0 A(A-14):总管工作区迁移(选择器授权票据+全量拷贝+校验,防绕过/防半迁移)
   registerManagerWorkspaceHandlers({
     migration: new ManagerWorkspaceMigrationService(managerWorkspaceResolver, settingsStore),
     workspaceAuth,
   })
-  registerSessionHandlers(sessionService, agentService, approvalBroker, managerCleanup)
+  registerSessionHandlers(sessionService, agentService, approvalBroker, managerCleanup, settingsStore)
   if (roleService) {
     registerRoleHandlers({
       roleService,
@@ -798,6 +808,7 @@ app.on('before-quit', (event) => {
   managerOrchestratorRef?.stopAccepting()
   const settle = (async () => {
     await managerOrchestratorRef?.drain()
+    await agentServiceRef?.drain()
     await Promise.allSettled([
       sessionRepository?.close(),
       usageServiceRef?.drainAndClose(),

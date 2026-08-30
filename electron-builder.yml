@@ -8,7 +8,7 @@ publish:
     url: https://agent.daweige.host/update/
 
 directories:
-  output: release-v10
+  output: release-v11
   buildResources: build
 
 files:

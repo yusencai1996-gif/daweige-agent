@@ -42,6 +42,11 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_model_date
 CREATE INDEX IF NOT EXISTS idx_usage_events_session
   ON usage_events(session_id);
 
+-- ⑤审整改:活跃时长聚合按 (session_id, occurred_at_ms, source_entry_id) 全表排序,
+-- 组合索引让 dashboard 免全表物化排序(数据量翻倍前的预防)
+CREATE INDEX IF NOT EXISTS idx_usage_events_session_time
+  ON usage_events(session_id, occurred_at_ms, source_entry_id);
+
 CREATE TABLE IF NOT EXISTS usage_session_spans (
   session_id            TEXT PRIMARY KEY,
   first_message_at_ms   INTEGER NOT NULL,
@@ -58,6 +63,46 @@ CREATE TABLE IF NOT EXISTS usage_meta (
 
 const ACTIVITY_DAYS = 365
 const TREND_DAYS = 30
+export const ACTIVE_SESSION_GAP_MS = 30 * 60 * 1000
+
+export interface UsageActivityRow {
+  readonly sessionId: string
+  readonly occurredAtMs: number
+}
+
+/** 纯函数版本供边界单测；输入可乱序，重复时间戳贡献 0。 */
+export function computeLongestActiveSessionDuration(
+  rows: readonly UsageActivityRow[],
+  maxGapMs = ACTIVE_SESSION_GAP_MS,
+): number {
+  const sorted = [...rows].sort(
+    (a, b) => a.sessionId.localeCompare(b.sessionId) || a.occurredAtMs - b.occurredAtMs,
+  )
+  return accumulateLongestActiveSessionDuration(sorted, maxGapMs)
+}
+
+function accumulateLongestActiveSessionDuration(
+  rows: Iterable<UsageActivityRow>,
+  maxGapMs: number,
+): number {
+  let currentSession: string | undefined
+  let previousAt = 0
+  let currentDuration = 0
+  let longest = 0
+  for (const row of rows) {
+    if (row.sessionId !== currentSession) {
+      longest = Math.max(longest, currentDuration)
+      currentSession = row.sessionId
+      previousAt = row.occurredAtMs
+      currentDuration = 0
+      continue
+    }
+    const delta = row.occurredAtMs - previousAt
+    if (delta >= 0 && delta <= maxGapMs) currentDuration += delta
+    previousAt = row.occurredAtMs
+  }
+  return Math.max(longest, currentDuration)
+}
 
 export class UsageStore {
   private readonly db: DatabaseSync
@@ -130,7 +175,7 @@ export class UsageStore {
     })
   }
 
-  /** 会话首末消息时间跨度(最长会话时长数据源);按 min/max 合并。 */
+  /** @deprecated 0.5.0 起不再读写；仅保留表/方法供老库兼容测试。 */
   upsertSessionSpan(sessionId: string, atMs: number): Promise<void> {
     return this.enqueue(() => {
       this.db
@@ -164,7 +209,7 @@ export class UsageStore {
     })
   }
 
-  /** 整页统计快照:四类聚合在只读事务内完成——跨进程并发写下也保证同源一致(复审 B-03)。 */
+  /** 整页统计快照:四类聚合在只读事务内完成——跨进程并发写下也保证同源一致(独立复审 B-03)。 */
   buildDashboard(nowMs: number, timeZone: string): Promise<UsageDashboard> {
     return this.enqueue(() => {
       this.db.exec('BEGIN DEFERRED')
@@ -251,10 +296,17 @@ export class UsageStore {
       .get() as { m: number | null } | undefined
     const peakDailyTokens = peakRow?.m ?? 0
 
-    const spanRow = this.db
-      .prepare('SELECT MAX(last_message_at_ms - first_message_at_ms) AS d FROM usage_session_spans')
-      .get() as { d: number | null } | undefined
-    const longestSessionDurationMs = spanRow?.d ?? 0
+    const activityRows = this.db
+      .prepare(
+        `SELECT session_id AS sessionId, occurred_at_ms AS occurredAtMs
+         FROM usage_events
+         ORDER BY session_id ASC, occurred_at_ms ASC, source_entry_id ASC`,
+      )
+      .iterate() as Iterable<UsageActivityRow>
+    const longestActiveSessionDurationMs = accumulateLongestActiveSessionDuration(
+      activityRows,
+      ACTIVE_SESSION_GAP_MS,
+    )
 
     const streaks = this.computeStreaks(today)
 
@@ -301,7 +353,7 @@ export class UsageStore {
     ).map((r) => ({ provider: r.p, model: r.m, totalTokens: r.s }))
 
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt: nowMs,
       timeZone,
       // 全零行(provider 未回 usage)不构成"有数据":以累计 token 为准
@@ -309,7 +361,7 @@ export class UsageStore {
       overview: {
         totalTokens,
         peakDailyTokens,
-        longestSessionDurationMs,
+        longestActiveSessionDurationMs,
         currentStreakDays: streaks.current,
         longestStreakDays: streaks.longest,
       },

@@ -82,7 +82,7 @@ export function registerAgentRunHandlers(
         throw new Error('派活刚被别人处理,请刷新再看')
       }
       // 运行时收尾:internal 会话 abort + 该会话挂起的确认卡按拒绝收尾;
-      // awaiting 阶段(无 internal 会话)的派活确认卡按 runId 精确拒绝(阶段复审整改)
+      // awaiting 阶段(无 internal 会话)的派活确认卡按 runId 精确拒绝(codex 阶段复审整改)
       if (interrupted.internalSessionId) {
         deps?.agent?.abort(interrupted.internalSessionId)
         deps?.broker?.abortAllForSession(
@@ -94,7 +94,7 @@ export function registerAgentRunHandlers(
       }
       const summary = await query.summary(interrupted)
       // 状态推送(interrupt 不走 orchestrator 的 emit 链,这里主动发):
-      // renderer 的派活卡/族谱图缓存都靠 agent_run_updated 失效刷新(复审整改)
+      // renderer 的派活卡/族谱图缓存都靠 agent_run_updated 失效刷新(codex 复验整改)
       deps?.emitEvent?.({
         type: 'agent_run_updated',
         managerSessionId,

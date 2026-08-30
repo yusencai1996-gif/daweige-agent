@@ -2,7 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { UsageStore } from '../../../src/main/usage/usage-store'
+import {
+  ACTIVE_SESSION_GAP_MS,
+  computeLongestActiveSessionDuration,
+  UsageStore,
+} from '../../../src/main/usage/usage-store'
 import { localDateFor, type ParsedUsageEvent } from '../../../src/main/usage/usage-parser'
 
 /**
@@ -187,15 +191,58 @@ describe('usage-store:dashboard 聚合', () => {
   })
 })
 
-describe('usage-store:会话跨度', () => {
-  it('upsert 取 min/max,最长会话时长正确', async () => {
-    await store.upsertSessionSpan('s1', Date.UTC(2026, 7, 24, 1))
-    await store.upsertSessionSpan('s1', Date.UTC(2026, 7, 24, 5))
-    await store.upsertSessionSpan('s1', Date.UTC(2026, 7, 24, 3))
-    await store.upsertSessionSpan('s2', Date.UTC(2026, 7, 20, 0))
-    await store.upsertSessionSpan('s2', Date.UTC(2026, 7, 20, 0, 30))
+describe('usage-store:活跃时长', () => {
+  const row = (sessionId: string, occurredAtMs: number) => ({ sessionId, occurredAtMs })
+
+  it('t0、+10m、+130m 只累计 10 分钟', () => {
+    expect(computeLongestActiveSessionDuration([
+      row('s1', 0), row('s1', 10 * 60_000), row('s1', 130 * 60_000),
+    ])).toBe(10 * 60_000)
+  })
+
+  it('恰好 30 分钟计入', () => {
+    expect(computeLongestActiveSessionDuration([row('s1', 0), row('s1', ACTIVE_SESSION_GAP_MS)]))
+      .toBe(ACTIVE_SESSION_GAP_MS)
+  })
+
+  it('30 分钟加 1 毫秒断开', () => {
+    expect(computeLongestActiveSessionDuration([row('s1', 0), row('s1', ACTIVE_SESSION_GAP_MS + 1)]))
+      .toBe(0)
+  })
+
+  it('两个 session 取连续累计较长的 45 分钟', () => {
+    expect(computeLongestActiveSessionDuration([
+      row('s1', 0), row('s1', 10 * 60_000),
+      row('s2', 0), row('s2', 20 * 60_000), row('s2', 45 * 60_000),
+    ])).toBe(45 * 60_000)
+  })
+
+  it('单事件为 0', () => {
+    expect(computeLongestActiveSessionDuration([row('s1', 123)])).toBe(0)
+  })
+
+  it('乱序与重复时间戳稳定', () => {
+    expect(computeLongestActiveSessionDuration([
+      row('s1', 20 * 60_000), row('s1', 0), row('s1', 10 * 60_000), row('s1', 10 * 60_000),
+    ])).toBe(20 * 60_000)
+  })
+
+  it('dashboard 从稳定排序的 usage events 单遍累计', async () => {
+    await store.insertEvents([
+      event({ sourceEntryId: 'late', sessionId: 's1', occurredAtMs: 20 * 60_000 }),
+      event({ sourceEntryId: 'early', sessionId: 's1', occurredAtMs: 0 }),
+      event({ sourceEntryId: 'middle', sessionId: 's1', occurredAtMs: 10 * 60_000 }),
+    ], 'live')
     const d = await store.buildDashboard(Date.UTC(2026, 7, 24, 12), TZ)
-    expect(d.overview.longestSessionDurationMs).toBe(4 * 3600_000)
+    expect(d.schemaVersion).toBe(2)
+    expect(d.overview.longestActiveSessionDurationMs).toBe(20 * 60_000)
+  })
+
+  it('老库只有 spans、没有 events 时返回 0', async () => {
+    await store.upsertSessionSpan('legacy', 0)
+    await store.upsertSessionSpan('legacy', 120 * 60_000)
+    const d = await store.buildDashboard(Date.UTC(2026, 7, 24, 12), TZ)
+    expect(d.overview.longestActiveSessionDurationMs).toBe(0)
   })
 })
 

@@ -254,7 +254,7 @@ export class ApprovalBroker {
   }
 
   /**
-   * 按 runId 精确拒绝未决的派活确认卡(0.4.0 D,阶段复审整改):
+   * 按 runId 精确拒绝未决的派活确认卡(0.4.0 D,codex 阶段复审整改):
    * 打断 awaiting-approval 的 run 时,spawn 的确认 Promise 要立即收敛,
    * 不能挂到超时;不影响同 manager 会话的其他确认卡。
    */

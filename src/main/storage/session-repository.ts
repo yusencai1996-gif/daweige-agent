@@ -3,7 +3,7 @@ import {
   createNodeSqliteFactory,
   type SqliteSessionMetadata,
 } from '@earendil-works/pi-session-backend-sqlite-node'
-import type { Session } from '@earendil-works/pi-agent-core'
+import type { CompactionEntry, Session } from '@earendil-works/pi-agent-core'
 import { dirname } from 'node:path'
 import { promises as fs } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -26,6 +26,25 @@ export interface DaweigeSessionAppMeta {
 }
 
 /** 只读遍历的 message entry 行(使用统计回填专用)。 */
+export type UsageEntryRow =
+  | {
+      readonly type: 'message'
+      readonly sessionId: string
+      readonly entryId: string
+      readonly seq: number
+      readonly timestamp: number
+      readonly message: unknown
+    }
+  | {
+      readonly type: 'compaction'
+      readonly sessionId: string
+      readonly entryId: string
+      readonly seq: number
+      readonly timestamp: number
+      readonly entry: CompactionEntry
+    }
+
+/** @deprecated 改用 UsageEntryRow；保留导出避免外部测试夹具断裂。 */
 export interface MessageEntryRow {
   readonly sessionId: string
   readonly entryId: string
@@ -109,18 +128,18 @@ export class SessionRepository {
   }
 
   /**
-   * 惰性分页只读遍历全部会话的 message entries(使用统计回填专用,复审 B-01 整改)。
+   * 惰性分页只读遍历全部会话的 message entries(使用统计回填专用,独立复审 B-01 整改)。
    * 独立只读连接直查 pi 的 entries 表:不 open Session、不取 writer lease;
    * 每页只取 pageSize 行,消费方在批间让出事件循环即不阻塞主线程、内存受控。
    * 行级容错:payload 损坏的行跳过,单行垃圾不中断遍历。
    * pi 三包锁 0.84.2,payload 形态({message: AgentMessage})随版本核验。
    */
-  *iterateMessageEntries(pageSize = 500): Generator<MessageEntryRow, void, void> {
+  *iterateUsageEntries(pageSize = 500): Generator<UsageEntryRow, void, void> {
     const db = new DatabaseSync(this.databasePath, { readOnly: true })
     try {
       const stmt = db.prepare(
-        `SELECT session_id, id, seq, timestamp, payload FROM entries
-         WHERE type = 'message'
+        `SELECT session_id, id, seq, type, timestamp, payload FROM entries
+         WHERE type IN ('message', 'compaction')
            AND (session_id > ? OR (session_id = ? AND seq > ?))
          ORDER BY session_id, seq
          LIMIT ?`,
@@ -132,29 +151,62 @@ export class SessionRepository {
           id: string
           seq: number
           timestamp: number
+          type: 'message' | 'compaction'
           payload: string
         }[]
         if (rows.length === 0) break
         for (const row of rows) {
           cursor = { sessionId: row.session_id, seq: row.seq }
-          let message: unknown
+          let payload: Record<string, unknown>
           try {
-            message = (JSON.parse(row.payload) as { message?: unknown }).message
+            const decoded: unknown = JSON.parse(row.payload)
+            if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) continue
+            payload = decoded as Record<string, unknown>
           } catch {
             continue
           }
-          if (message === undefined) continue
-          yield {
-            sessionId: row.session_id,
-            entryId: row.id,
-            seq: row.seq,
-            timestamp: row.timestamp,
-            message,
+          if (row.type === 'message') {
+            if (payload.message === undefined) continue
+            yield {
+              type: 'message',
+              sessionId: row.session_id,
+              entryId: row.id,
+              seq: row.seq,
+              timestamp: row.timestamp,
+              message: payload.message,
+            }
+          } else {
+            if (typeof payload.summary !== 'string' || !Array.isArray(payload.retainedTail)) continue
+            if (typeof payload.tokensBefore !== 'number') continue
+            yield {
+              type: 'compaction',
+              sessionId: row.session_id,
+              entryId: row.id,
+              seq: row.seq,
+              timestamp: row.timestamp,
+              entry: {
+                type: 'compaction',
+                id: row.id,
+                seq: row.seq,
+                parentId: null,
+                timestamp: row.timestamp,
+                summary: payload.summary,
+                retainedTail: payload.retainedTail as CompactionEntry['retainedTail'],
+                tokensBefore: payload.tokensBefore,
+                ...(payload.usage ? { usage: payload.usage as CompactionEntry['usage'] } : {}),
+                ...(payload.details !== undefined ? { details: payload.details } : {}),
+              },
+            }
           }
         }
       }
     } finally {
       db.close()
     }
+  }
+
+  /** @deprecated A-29 起 usage 回填须覆盖 compaction；旧名转发新迭代器。 */
+  *iterateMessageEntries(pageSize = 500): Generator<UsageEntryRow, void, void> {
+    yield* this.iterateUsageEntries(pageSize)
   }
 }

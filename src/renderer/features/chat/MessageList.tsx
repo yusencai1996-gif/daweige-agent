@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import { MarkdownMessage } from '../../components/MarkdownMessage'
 import { ThinkingBlock } from './ThinkingBlock'
+import { CompactionNotice } from './CompactionNotice'
 import { ToolStatus } from './ToolStatus'
 import { CommandBlock } from './CommandBlock'
 import type { CommandLiveChunks } from './command-live'
@@ -78,6 +79,10 @@ export function MessageList({ items, roleName, streamingMessageId, onRetry, dele
             return <DelegationCard key={`run-${item.run.runId}`} run={item.run} actions={delegation} />
           }
           const message = item.message
+          // 压缩提示行(A-29):kind='compaction' 的系统消息,低调一行可展开摘要
+          if (message.kind === 'compaction') {
+            return <CompactionNotice key={message.id} message={message} />
+          }
           if (message.role === 'user') {
             return (
               <div key={message.id} className="msg-user">

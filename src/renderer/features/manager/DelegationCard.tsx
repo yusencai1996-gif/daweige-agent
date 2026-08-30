@@ -9,6 +9,7 @@ import type {
   DelegationApprovalRequest,
 } from '../../../shared/domain'
 import { formatTokens, formatTokensFull } from '../usage/usage-format'
+import { TokenSegmentBar } from './TokenSegmentBar'
 
 /** 派活确认(delegation)的前端状态:请求本体 + 是否已回过一次(防重复点击)。 */
 export interface DelegationApprovalState {
@@ -218,7 +219,7 @@ interface DelegationCardProps {
  * 派活卡(0.3.0 批 2a,PLAN §10.2):小柊消息流里的 run 卡。
  * 固定字段:派给谁/任务简报/允许路径/状态/轮次/总 token;
  * 验收要点/分项 token/产物路径/越界记录收进「展开细节」(默认折叠,防消息流臃肿);
- * 「查看完整过程」(批 2b)点进整页只读详情 AgentRunDetailView(PLAN §10.3);
+ * 「查看完整过程」(0.5.0 第三批 A-28 收编)打开协作链面板详情态并 pin 这条 run 的 tab;
  * awaiting-approval 形态即确认卡,[同意派出]/[不派] 走 approval:respond;
  * 审批完成后靠 agent_run_updated 原位变状态卡,不插第二张。
  */
@@ -404,13 +405,10 @@ export function DelegationCard({ run, actions }: DelegationCardProps) {
 
       {expanded && (
         <div className="delegation-detail">
+          {/* 分项 token(A-25):纯文字四项升级为分段横条图;卡面「轮次 X · 总 token Y」小字不动 */}
           <div className="delegation-field">
             <span className="delegation-label">分项 token</span>
-            <span className="muted" title={usageTitle(usage)}>
-              输入 {formatTokens(usage.inputTokens)} · 输出 {formatTokens(usage.outputTokens)} ·
-              缓存读 {formatTokens(usage.cacheReadTokens)} · 缓存写{' '}
-              {formatTokens(usage.cacheWriteTokens)}
-            </span>
+            <TokenSegmentBar usage={usage} />
           </div>
           {detail === undefined ? (
             <div className="delegation-hint">

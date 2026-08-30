@@ -25,6 +25,26 @@ const sampleDetails: CommandResultDetails = {
 }
 
 describe('message-mapper:run_command 终值恢复(0.4.0 C)', () => {
+  it('compaction entry 与完整旧消息共同映射为 session:open 提示行', () => {
+    const old = messageEntry({ role: 'user', content: [{ type: 'text', text: '旧事实' }], timestamp: 1 })
+    const compaction = {
+      type: 'compaction',
+      id: 'compact-1',
+      seq: 2,
+      parentId: old.id,
+      timestamp: 2,
+      summary: '摘要保留旧事实',
+      retainedTail: [],
+      tokensBefore: 100_000,
+    } as Entry
+    const messages = entriesToChatMessages([old, compaction])
+    expect(messages[0]).toMatchObject({ kind: 'chat', role: 'user', text: '旧事实' })
+    expect(messages[1]).toMatchObject({
+      kind: 'compaction', role: 'system', id: 'compact-1', summary: '摘要保留旧事实',
+      tokensBefore: 100_000,
+    })
+  })
+
   it('toolResult.details → assistant 工具行带 command 终值,CommandBlock 刷新可重建', () => {
     const messages = entriesToChatMessages([
       messageEntry({ role: 'user', content: [{ type: 'text', text: '看看报表' }] }),

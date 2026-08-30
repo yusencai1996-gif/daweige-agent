@@ -77,6 +77,11 @@ export interface AgentRunGraph {
     readonly failed: number
     readonly interrupted: number
     readonly totalTokens: number
+    /**
+     * 未派出(rejected)单列(0.5.0 视觉验收口径修正):可选——主进程 DTO 仍并入 failed;
+     * 面板展示由 renderer composePanelGraph 本地重算时带上,与节点状态文案「未派出」对齐。
+     */
+    readonly rejected?: number
   }
 }
 

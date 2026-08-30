@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { Settings } from '../../shared/domain'
 import type { DaweigeBridge } from '../../shared/ipc/bridge'
 import { TitleBar } from '../components/TitleBar'
 import { RoleSidebar } from '../features/roles/RoleSidebar'
@@ -9,9 +10,9 @@ import { ArchiveView } from '../features/roles/ArchiveView'
 import { ChatView } from '../features/chat/ChatView'
 import { SettingsView } from '../features/settings/SettingsView'
 import { UsageView } from '../features/usage/UsageView'
-import { AgentRunDetailView } from '../features/manager/AgentRunDetailView'
 import type { GuardrailsDraftCardActions } from '../features/manager/GuardrailsDraftCard'
 import { SYSTEM_MANAGER_ROLE_ID } from '../../shared/domain/manager'
+import { canSaveAsRoleDefault } from '../features/settings/model-options'
 import { useAppController } from './use-app-controller'
 
 /** 全局背景三层:纸纹(全屏唯一实例)+ 左右淡墨山,沉在内容之后。 */
@@ -157,6 +158,9 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               onSelectProvider={(sel) => void controller.selectProvider(sel)}
               enabledModels={controller.settings.enabledModels ?? []}
               onToggleEnabledModel={(item) => void controller.toggleEnabledModel(item)}
+              roles={controller.roles}
+              roleModelDefaults={controller.settings.roleModelDefaults}
+              onSetRoleDefault={(roleId, sel) => void controller.setRoleModelDefault(roleId, sel)}
               appVersion={controller.bootstrap.appVersion}
               updateState={controller.updateState}
               onCheckUpdate={() => void controller.checkUpdate()}
@@ -188,17 +192,6 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               onRestoreSession={(id) => void controller.restoreSession(id)}
               onDeleteSession={(id) => void controller.deleteSession(id)}
             />
-          ) : controller.view === 'agent-run-detail' && controller.runDetailView !== null ? (
-            <AgentRunDetailView
-              run={controller.runDetailView.run}
-              detail={controller.runDetailView.detail}
-              detailLoading={controller.runDetailView.loading}
-              graph={controller.runDetailView.graph}
-              graphLoading={controller.runDetailView.graphLoading}
-              delegation={controller.delegation}
-              onOpenRun={controller.openAgentRunDetail}
-              onBack={controller.closeAgentRunDetail}
-            />
           ) : (
             <ChatView
               bridge={bridge}
@@ -208,6 +201,8 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               messages={controller.messages}
               agentRuns={controller.agentRuns}
               delegation={controller.delegation}
+              collabPanel={controller.collabPanel}
+              collabPanelActions={controller.collabPanelActions}
               draftActions={draftActions}
               roleName={controller.activeRoleName}
               streamingMessageId={controller.streamingMessageId}
@@ -220,13 +215,25 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               draft={controller.draftFor(controller.activeSessionId)}
               onDraftChange={(text) => controller.setDraft(controller.activeSessionId, text)}
               providers={controller.bootstrap.providers}
-              selection={controller.settings.providerSelection}
+              // A-24:右下角切换器显示当前会话生效选择(临时覆盖 > 角色默认 > 全局默认)
+              selection={controller.activeModelSelection ?? controller.settings.providerSelection}
               enabledModels={controller.settings.enabledModels}
               thinkingLevel={controller.settings.thinkingLevel ?? 'off'}
               reminders={controller.reminders}
               onToggleSidebar={() => setSidebarOpen((v) => !v)}
-              onSelectProvider={(selection) => void controller.selectProvider(selection)}
+              // A-24:会话内切换只写内存覆盖,不落盘;设置页全局默认走 selectProvider
+              onSelectProvider={(selection) => controller.selectSessionProvider(selection)}
               onChangeThinking={(level) => void controller.updateThinkingLevel(level)}
+              saveAsRoleDefault={(() => {
+                const roleId = controller.activeDetail?.summary.roleId ?? null
+                const selection = controller.activeModelSelection
+                if (roleId === null || selection === null) return null
+                return {
+                  roleName: controller.activeRoleName,
+                  canSave: canSaveAsRoleDefault(controller.settings as Settings, roleId, selection),
+                  onSave: () => void controller.saveActiveModelAsRoleDefault(),
+                }
+              })()}
               onSend={(text) => void controller.send(text)}
               onAbort={() => void controller.abort()}
               onRetry={() => void controller.retryLast()}

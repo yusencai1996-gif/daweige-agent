@@ -13,6 +13,7 @@ import type {
   RoleSummary,
   UsageDashboard,
 } from '../../src/shared/domain'
+import { pruneRoleModelDefaults } from '../../src/shared/domain/model-selection'
 
 /**
  * 契约 mock 桥(M1-04)——渲染进程 UI 开发与单元测试用。
@@ -397,7 +398,8 @@ export class MockBridge implements DaweigeBridge {
       return { ...session, archivedAt: null }
     })
     this.handle('settings:get', () => bootstrap.settings)
-    this.handle('settings:update', ({ settings }) => settings)
+    // ⑤审整改:复刻主进程 settings-handlers 的角色默认剪枝(池外/非法 key),mock 与真实行为对齐
+    this.handle('settings:update', ({ settings }) => pruneRoleModelDefaults(settings))
     // A-14 演示:恢复默认=migrate(默认路径)→ isDefault 回 true(后端契约如此)
     const demoManagerDefaultWorkspace =
       'C:/Users/demo/AppData/Roaming/大微阁/daweige/system/sys-xiaozhen/workspace'
@@ -677,14 +679,14 @@ export function demoUsageDashboard(options?: {
 
   const totalTokens = hasData ? 8_432_168 : 0
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: today.getTime(),
     timeZone: 'Asia/Shanghai',
     hasData,
     overview: {
       totalTokens,
       peakDailyTokens: hasData ? 58_432 : 0,
-      longestSessionDurationMs: hasData ? 9_360_000 : 0, // 2小时36分
+      longestActiveSessionDurationMs: hasData ? 9_360_000 : 0, // 2小时36分
       currentStreakDays: hasData ? 6 : 0,
       longestStreakDays: hasData ? 21 : 0,
     },

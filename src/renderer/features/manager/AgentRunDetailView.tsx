@@ -1,20 +1,14 @@
-import { useMemo } from 'react'
 import type { AgentRunDetail, AgentRunGraph, AgentRunSummary } from '../../../shared/domain'
-import { MessageList } from '../chat/MessageList'
-import { formatTokens, formatTokensFull } from '../usage/usage-format'
-import { InterruptControl, statusInfo, type DelegationCardActions } from './DelegationCard'
+import type { DelegationCardActions } from './DelegationCard'
 import { AgentRunGraphView } from './AgentRunGraphView'
-import type { ConversationTimelineItem } from './conversation-timeline'
+import { AgentRunProcessPane } from './AgentRunProcessPane'
 
 /**
- * internal 只读详情整页(0.3.0 批 2b,PLAN §10.3)。
- *
- * - 顶部:「返回小柊」+ 目标角色名 + 任务简报 + 状态 + 用量(轮次/总 token);
- * - 协作链(0.4.0 D):graph 已取回且多节点时,头部下挂「协作链」族谱区块;
- *   单节点链不渲染(0.3 行为不变);非终态 run 附打断入口;
- * - 正文:复用 MessageList 渲染 childSession 的消息/思考块/工具行,不重写消息组件;
- * - 不渲染 Composer:internal 会话只读,不能发消息/中止/改名/归档/删除;
- * - 数据刷新由 controller 负责(agent_run_updated → 重拉 agentRun:getDetail)。
+ * @deprecated A-28(0.5.0 第三批,PLAN §6.3 重构 3):internal 只读详情整页已收编进
+ * 协作链常驻面板的详情态(CollaborationPanelExpanded),ViewMode='agent-run-detail'
+ * 路由与 App.tsx 分支已删,本组件不再被任何路由挂载。
+ * 文件暂作兼容壳保留:页面骨架原样,消息过程主体由 AgentRunProcessPane 承担
+ * (逻辑不复制);确认面板全量回归后可整体删除本文件。
  */
 
 interface AgentRunDetailViewProps {
@@ -23,12 +17,12 @@ interface AgentRunDetailViewProps {
   /** 已取回的详情;undefined = 还在取。 */
   readonly detail: AgentRunDetail | undefined
   readonly detailLoading: boolean
-  /** 当前 run 所属协作链整图(controller 懒加载缓存;单节点链恒为 undefined)。 */
+  /** 当前 run 所属协作链整图(单节点链恒为 undefined)。 */
   readonly graph: AgentRunGraph | undefined
   readonly graphLoading: boolean
   /** MessageList 的时间线里没有 run 项,派活卡动作用不到,原样透传满足签名。 */
   readonly delegation: DelegationCardActions
-  /** 族谱里点其他节点 → 打开那条 run 的详情页(复用 openAgentRunDetail)。 */
+  /** 族谱里点其他节点 → 打开那条 run(收编后此入口已无路由消费者)。 */
   readonly onOpenRun: (runId: string) => void
   readonly onBack: () => void
 }
@@ -43,20 +37,6 @@ export function AgentRunDetailView({
   onOpenRun,
   onBack,
 }: AgentRunDetailViewProps) {
-  const info = statusInfo(run)
-  const { usage } = run
-  const hasUsage = usage.rounds > 0 || usage.totalTokens > 0
-
-  // child 消息 → 时间线条目(纯消息,无 run 卡);detail 未到/会话缺失时为空
-  const items: readonly ConversationTimelineItem[] = useMemo(
-    () =>
-      (detail?.childSession?.messages ?? []).map((message) => ({
-        kind: 'message' as const,
-        message,
-      })),
-    [detail],
-  )
-
   return (
     <div className="run-detail-pane">
       <div className="run-detail-header">
@@ -71,26 +51,9 @@ export function AgentRunDetailView({
             </div>
           </div>
         </div>
-        <div className="run-detail-meta">
-          <span className={`delegation-dot ${info.tone}`} aria-hidden="true" />
-          <span>{info.text}</span>
-          {hasUsage && (
-            <span
-              className="muted"
-              title={`输入 ${formatTokensFull(usage.inputTokens)} · 输出 ${formatTokensFull(usage.outputTokens)} · 缓存读 ${formatTokensFull(usage.cacheReadTokens)} · 缓存写 ${formatTokensFull(usage.cacheWriteTokens)} tokens`}
-            >
-              轮次 {usage.rounds} · 总 token {formatTokens(usage.totalTokens)}
-            </span>
-          )}
-          <InterruptControl
-            run={run}
-            busy={delegation.interruptBusyFor(run.runId)}
-            onInterrupt={delegation.onInterrupt}
-          />
-        </div>
       </div>
 
-      {/* 协作链族谱(0.4.0 D):懒加载中的弱提示;单节点链两分支都不渲染,0.3 行为不变 */}
+      {/* 协作链族谱(0.4.0 D):单节点链不渲染;横向旧图组件与纵向面板共用拓扑纯函数 */}
       {graphLoading && graph === undefined && (
         <div className="run-detail-sync muted" role="status">
           <span className="delegation-dot active" aria-hidden="true" />
@@ -101,31 +64,13 @@ export function AgentRunDetailView({
         <AgentRunGraphView graph={graph} currentRunId={run.runId} onOpenRun={onOpenRun} />
       )}
 
-      {run.status === 'running' && (
-        // 顺手项(0.3.0 整改):干活进行中给低频呼吸点,盖住防抖同步间隙,不显得卡死
-        <div className="run-detail-sync muted" role="status">
-          <span className="delegation-dot active" aria-hidden="true" />
-          正在同步干活过程…
-        </div>
-      )}
-
-      {detail === undefined ? (
-        <div className="run-detail-state muted">
-          {detailLoading ? '正在翻过程记录…' : '过程没取到,返回后从卡片再试一次。'}
-        </div>
-      ) : detail.childSession === null ? (
-        <div className="run-detail-state muted">过程会话缺失,记录找不回来了。</div>
-      ) : items.length === 0 ? (
-        <div className="run-detail-state muted">过程会话里还没有留下消息。</div>
-      ) : (
-        <MessageList
-          items={items}
-          roleName={run.targetRoleName}
-          streamingMessageId={null}
-          onRetry={() => undefined}
-          delegation={delegation}
-        />
-      )}
+      {/* 消息过程主体(A-28 提取):状态行/用量横条/呼吸提示/MessageList 全部在 ProcessPane */}
+      <AgentRunProcessPane
+        run={run}
+        detail={detail}
+        detailLoading={detailLoading}
+        delegation={delegation}
+      />
     </div>
   )
 }

@@ -47,7 +47,7 @@ export class AgentRunScheduler {
    * 触发一轮调度。批准后/终态后调用;并发触发自动合并(互斥执行,结束后补一轮),
    * 高频推送下天然防抖。永不 reject(backend 专审整改):级联竞态/退出关库等异常
    * 只记日志,不产生未处理 rejection 冒泡到 void 调用点。
-   * 外层异常退出时保留 pendingTick 并补跑一轮(阶段复审整改:吞异常不能吞掉
+   * 外层异常退出时保留 pendingTick 并补跑一轮(codex 阶段复审整改:吞异常不能吞掉
    * 排队信号,否则后续节点可能永久滞留 queued)。
    */
   async tick(): Promise<void> {
@@ -88,7 +88,7 @@ export class AgentRunScheduler {
     let active = await this.deps.roles.countActiveRuns()
     for (const candidate of queued) {
       if (this.disposed) return
-      // 错误隔离到单个 candidate(阶段复审整改):一个 run 的意外异常
+      // 错误隔离到单个 candidate(codex 阶段复审整改):一个 run 的意外异常
       // 只记日志跳过,不吞掉本轮其余 run 的调度机会
       try {
         const started = await this.scheduleCandidate(candidate.runId, active)

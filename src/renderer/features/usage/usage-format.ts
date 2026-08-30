@@ -40,3 +40,22 @@ export function formatPercent(ratio: number): string {
   const text = pct >= 10 ? pct.toFixed(1) : pct.toFixed(2)
   return `${trimZeros(text)}%`
 }
+
+/**
+ * 把格式化后的短文本切成「数字+单位」组合段:"2小时36分"→["2小时","36分"]、
+ * "20.1万"→["20.1万"]、"3 天"→["3 天"](内部空格并入组合)。
+ * 卡片值逐段包 nowrap:折行只允许发生在组合之间,单位字不掉队孤行(0.5.0 视觉验收);
+ * 值文本本身不变(拼接回原串),title/复制不受影响。
+ */
+export function numberUnitSegments(text: string): readonly string[] {
+  const re = /\d[\d,]*(?:\.\d+)?\s*(?:万亿|亿|万|小时内|小时|分钟内|分钟|分|秒|天|%)?/g
+  const segments: string[] = []
+  let last = 0
+  for (const match of text.matchAll(re)) {
+    if (match.index > last) segments.push(text.slice(last, match.index))
+    segments.push(match[0])
+    last = match.index + match[0].length
+  }
+  if (last < text.length) segments.push(text.slice(last))
+  return segments
+}

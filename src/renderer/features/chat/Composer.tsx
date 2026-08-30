@@ -28,6 +28,12 @@ interface ComposerProps {
   readonly onChangeThinking: (level: ThinkingLevel) => void
   readonly onSend: (text: string) => void
   readonly onAbort: () => void
+  /** 「存为该角色默认」入口(A-24):当前会话属角色时透传给 ProviderSelector;无角色会话缺省。 */
+  readonly saveAsRoleDefault?: {
+    readonly roleName: string
+    readonly canSave: boolean
+    readonly onSave: () => void
+  }
 }
 
 /** 千位缩写:12300 → "12.3k",256000 → "256k"。 */
@@ -89,6 +95,7 @@ export function Composer({
   onChangeThinking,
   onSend,
   onAbort,
+  saveAsRoleDefault,
 }: ComposerProps) {
   const [importNotice, setImportNotice] = useState<string | null>(null)
   const importTimerRef = useRef<number | null>(null)
@@ -210,6 +217,7 @@ export function Composer({
               selection={selection}
               enabledModels={enabledModels}
               onSelect={onSelectProvider}
+              saveAsRoleDefault={saveAsRoleDefault}
             />
             {supportsThinking && (
               <select

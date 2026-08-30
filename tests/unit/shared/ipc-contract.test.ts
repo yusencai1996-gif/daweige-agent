@@ -6,6 +6,8 @@ import {
 } from '../../../src/shared/ipc/channels'
 import type { IpcRequestMap, ContractChannel } from '../../../src/shared/ipc/contracts'
 import { REQUEST_SCHEMAS, validateRequest } from '../../../src/shared/ipc/schemas'
+import { pruneRoleModelDefaults } from '../../../src/shared/domain/model-selection'
+import type { Settings } from '../../../src/shared/domain/settings'
 import { MockBridge } from '../../helpers/mock-bridge'
 
 // ---------- apiKey 红线(类型级)----------
@@ -16,6 +18,8 @@ type HasApiKey<T> = T extends Primitive
   ? false
   : T extends readonly unknown[]
     ? HasApiKey<T[number]>
+    : string extends keyof T
+      ? HasApiKey<T[string & keyof T]>
     : 'apiKey' extends keyof T
       ? true
       : true extends { [K in keyof T]-?: HasApiKey<T[K]> }[keyof T]
@@ -72,8 +76,6 @@ describe('IPC 契约:入参运行时校验', () => {
   it('合法的 session:create(roleId 形态)通过', () => {
     const r = validateRequest('session:create', {
       roleId: 'agent-a1b2c3d4e5f6',
-      providerId: 'kimi-coding',
-      modelId: 'kimi-for-coding',
     })
     expect(r.ok).toBe(true)
   })
@@ -82,15 +84,11 @@ describe('IPC 契约:入参运行时校验', () => {
     expect(
       validateRequest('session:create', {
         roleId: 'sys-xiaozhen',
-        providerId: 'kimi-coding',
-        modelId: 'kimi-for-coding',
       }).ok,
     ).toBe(true)
     for (const roleId of ['sys-evil', 'sys-xiaozhen-fake', 'SYS-XIAOZHEN']) {
       const r = validateRequest('session:create', {
         roleId,
-        providerId: 'kimi-coding',
-        modelId: 'kimi-for-coding',
       })
       expect(r.ok, `roleId ${roleId} 应被拒绝`).toBe(false)
     }
@@ -107,7 +105,7 @@ describe('IPC 契约:入参运行时校验', () => {
       const r = validateRequest('agentRun:getDetail', { runId, managerSessionId: 'demo-session-manager' })
       expect(r.ok, `runId ${runId} 应被拒绝`).toBe(false)
     }
-    // 缺 managerSessionId 拒(阶段复审整改:ownership 入参必填)
+    // 缺 managerSessionId 拒(codex 阶段复审整改:ownership 入参必填)
     expect(validateRequest('agentRun:getDetail', { runId: 'run-a1b2c3d4e5f60718' }).ok).toBe(false)
     expect(validateRequest('agentRun:list', {}).ok).toBe(false)
   })
@@ -202,13 +200,57 @@ describe('IPC 契约:入参运行时校验', () => {
     const ok = validateRequest('message:send', {
       sessionId: 'sess-1',
       text: '好'.repeat(100_000),
+      selection: { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
     })
     expect(ok.ok).toBe(true)
     const tooLong = validateRequest('message:send', {
       sessionId: 'sess-1',
       text: '好'.repeat(100_001),
+      selection: { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
     })
     expect(tooLong.ok).toBe(false)
+  })
+
+  it('message:send 要求合法 selection', () => {
+    const base = { sessionId: 'sess-1', text: '你好' }
+    expect(validateRequest('message:send', base as never).ok).toBe(false)
+    expect(validateRequest('message:send', {
+      ...base,
+      selection: { providerId: 'openai', modelId: 'gpt' },
+    } as never).ok).toBe(false)
+  })
+
+  it('Settings roleModelDefaults 接受普通角色/小柊，拒绝非法 key、超 128 与非法 selection', () => {
+    const base = {
+      providerSelection: { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
+      enabledModels: [{ providerId: 'deepseek', modelId: 'deepseek-v4-flash' }],
+    } as const
+    expect(validateRequest('settings:update', { settings: {
+      ...base,
+      roleModelDefaults: {
+        'agent-a1b2c3d4e5f6': { providerId: 'deepseek', modelId: 'deepseek-v4-flash' },
+        'sys-xiaozhen': { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
+      },
+    } }).ok).toBe(true)
+    // TypeBox 0.34 不执行 Record key 的 pattern 校验(schemas 里的 key pattern 仅作声明);
+    // 非法 key 由主进程 settings:update → pruneRoleModelDefaults 剪除,按行为断言:
+    expect(
+      pruneRoleModelDefaults({
+        ...base,
+        roleModelDefaults: { 'sys-evil': { providerId: 'deepseek', modelId: 'deepseek-v4-flash' } },
+      } as Settings).roleModelDefaults,
+    ).toBeUndefined()
+    expect(validateRequest('settings:update', { settings: {
+      ...base,
+      roleModelDefaults: Object.fromEntries(Array.from({ length: 129 }, (_, i) => [
+        `agent-${i.toString(16).padStart(12, '0')}`,
+        { providerId: 'deepseek', modelId: 'deepseek-v4-flash' },
+      ])),
+    } } as never).ok).toBe(false)
+    expect(validateRequest('settings:update', { settings: {
+      ...base,
+      roleModelDefaults: { 'agent-a1b2c3d4e5f6': { providerId: 'openai', modelId: 'gpt' } },
+    } } as never).ok).toBe(false)
   })
 })
 
@@ -278,15 +320,18 @@ describe('IPC 契约:角色通道(0.2.0)', () => {
     expect(
       validateRequest('session:create', {
         roleId: 'agent-a1b2c3d4e5f6',
-        providerId: 'kimi-coding',
-        modelId: 'kimi-for-coding',
       }).ok,
     ).toBe(true)
     expect(
       validateRequest('session:create', {
         workspacePath: 'C:\\demo',
-        providerId: 'kimi-coding',
-        modelId: 'kimi-for-coding',
+      } as never).ok,
+    ).toBe(false)
+    expect(
+      validateRequest('session:create', {
+        roleId: 'agent-a1b2c3d4e5f6',
+        providerId: 'deepseek',
+        modelId: 'forged',
       } as never).ok,
     ).toBe(false)
   })

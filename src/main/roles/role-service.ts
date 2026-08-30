@@ -294,7 +294,7 @@ export class RoleService {
       )
     }
     const home = roleHomePath(this.userDataPath, roleId)
-    // 复审 B-01:读原文+文件替换+条件递增+失败恢复,全在同一队列槽内原子执行——
+    // 独立复审 B-01:读原文+文件替换+条件递增+失败恢复,全在同一队列槽内原子执行——
     // "原文"在槽内读取(不受并发方写入干扰),最终落盘内容恒等于版本胜出方
     const bumped = await this.repository.runGuardrailsUpdate(
       roleId,
@@ -428,7 +428,7 @@ export class RoleService {
   ): Promise<RoleDeleteResult> {
     const deletedSessionIds: string[] = []
     try {
-      // 复审 B-03:lifecycle=deleting 与 job 首记同事务——
+      // 独立复审 B-03:lifecycle=deleting 与 job 首记同事务——
       // 两步之间退出不再产生"deleting 但无 job"的永不续跑状态
       await this.repository.beginDeletionTransaction(roleId, 'confirmed', sessionIds)
       // 中断所有子会话 agent、拒绝收尾其待确认卡

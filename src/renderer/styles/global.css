@@ -97,11 +97,15 @@ button {
   cursor: pointer;
 }
 
+/* A-27(0.5.0):按钮文字永不挤压——不折行、不收缩;
+   空间不够时由所在容器 flex-wrap 换行兜底,标题/简报等文字区先收缩(min-width:0) */
 .btn {
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   padding: 7px 16px;
   line-height: 1.6;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: background-color .15s cubic-bezier(.2, 0, 0, 1), color .15s cubic-bezier(.2, 0, 0, 1);
 }
 
@@ -158,6 +162,11 @@ select {
   color: var(--muted);
 }
 
+/* 不可拆组合(数字+单位、短指标短语):折行只发生在组合之间,单位字不孤行 */
+.u-nowrap {
+  white-space: nowrap;
+}
+
 /* ============ 布局骨架 ============ */
 .app-root {
   display: flex;
@@ -198,6 +207,8 @@ select {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* A-28:协作链面板外壳按 main-pane 右上角锚定(absolute 参照系) */
+  position: relative;
 }
 
 /* ============ 自绘标题栏(系统蓝边退场) ============ */

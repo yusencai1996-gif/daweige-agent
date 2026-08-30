@@ -4,6 +4,8 @@ import type {
   ProviderId,
   ProviderInfo,
   ProviderSelection,
+  RoleSummary,
+  Settings,
 } from '../../../shared/domain'
 import type { UpdateState } from '../../../shared/domain/update'
 import type { DaweigeBridge } from '../../../shared/ipc/bridge'
@@ -12,6 +14,7 @@ import { MemoryPanel } from './MemoryPanel'
 import { AboutPanel } from './AboutPanel'
 import { ModelPicker } from './ModelPicker'
 import { ManagerWorkspacePanel } from './ManagerWorkspacePanel'
+import { RoleDefaultModelPanel } from './RoleDefaultModelPanel'
 
 type SettingsSection = 'keys' | 'memory' | 'workspace' | 'about'
 
@@ -29,6 +32,10 @@ interface SettingsViewProps {
   readonly enabledModels: readonly ProviderSelection[]
   /** 勾选/取消一个常用模型(写 settings.enabledModels 持久化)。 */
   readonly onToggleEnabledModel: (item: ProviderSelection) => void
+  /** 角色默认模型面板(A-24):角色列表(含小柊)/现有映射/写入口(走 settings 串行链)。 */
+  readonly roles: readonly RoleSummary[]
+  readonly roleModelDefaults: Settings['roleModelDefaults']
+  readonly onSetRoleDefault: (roleId: string, selection: ProviderSelection | null) => void
   readonly appVersion: string
   readonly updateState: UpdateState
   readonly onCheckUpdate: () => void
@@ -59,6 +66,9 @@ export function SettingsView({
   onSelectProvider,
   enabledModels,
   onToggleEnabledModel,
+  roles,
+  roleModelDefaults,
+  onSetRoleDefault,
   appVersion,
   updateState,
   onCheckUpdate,
@@ -299,6 +309,15 @@ export function SettingsView({
             />
           </div>
         )}
+
+        {/* A-24:角色默认模型面板(模型区,与厂商凭据面板平级;逐项从启用池选,可「跟随全局」) */}
+        <RoleDefaultModelPanel
+          roles={roles}
+          enabledModels={enabledModels}
+          roleModelDefaults={roleModelDefaults}
+          providers={providers}
+          onSetRoleDefault={onSetRoleDefault}
+        />
           </>
         )}
       </div>

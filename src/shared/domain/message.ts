@@ -5,6 +5,16 @@
 
 export type MessageRole = 'user' | 'assistant' | 'error'
 
+export interface CompactionNoticeMessage {
+  readonly kind: 'compaction'
+  readonly id: string
+  readonly role: 'system'
+  readonly summary: string
+  readonly tokensBefore: number
+  readonly tokensAfter: number
+  readonly createdAt: number
+}
+
 /**
  * 工具执行状态(对应确认卡片与工具过程展示)。
  * - pending: 等待用户确认(确认卡片已弹出)
@@ -32,6 +42,7 @@ export interface ToolExecutionInfo {
 }
 
 export type ChatMessage =
+  | CompactionNoticeMessage
   | {
       readonly kind: 'chat'
       readonly id: string

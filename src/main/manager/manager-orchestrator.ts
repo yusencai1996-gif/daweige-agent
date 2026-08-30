@@ -52,7 +52,7 @@ export interface ManagerOrchestratorDeps {
   readonly worker: WorkerRunner
   readonly query: AgentRunQueryService
   readonly userDataPath: string
-  readonly selection: () => Promise<ProviderSelection>
+  readonly selection: (roleId: string) => Promise<ProviderSelection>
   readonly emitEvent: (event: AgentPushEvent) => void
   readonly isPackaged: boolean
 }
@@ -184,11 +184,11 @@ export class ManagerOrchestrator {
     )
     // 2. DB 权威定论 → HandoffEnvelopeV1(模型不能自报 artifact/result)
     const handoff = this.buildHandoffEnvelope(sorted, input.managerConclusion)
-    // 3. 下游 envelope:DB 权威事实全集烘进 managerConclusions(阶段复审整改:
+    // 3. 下游 envelope:DB 权威事实全集烘进 managerConclusions(codex 阶段复审整改:
     // 上游保守 fallback 时 conclusions=[] 只有 summary,漏了它下游什么都看不到)。
     // summary/unmet/boundary 均来自主进程权威记录;thinking/transcript 仍无数据入口。
     // 单条事实截断到 1_900(前缀+正文仍低于 envelope 单条 2_000 上限):上游 summary 合法
-    // 长度可达 20_000 字,硬拒会让"较长但合法的交棒"整体失败(复审整改复验)
+    // 长度可达 20_000 字,硬拒会让"较长但合法的交棒"整体失败(codex 整改复验)
     const clipFact = (text: string): string =>
       [...text].length <= 1_900 ? text : `${[...text].slice(0, 1_890).join('')}(已截断)`
     const sourceSummaries = sorted
@@ -201,7 +201,7 @@ export class ManagerOrchestrator {
       ? [clipFact(`上游执行期的越界事实(主进程权威记录,仅供参考):${handoff.boundaryFacts.join('；')}`)]
       : []
     // A-19:上游数据明细随定论传给下游,免去下游想读原件核对的冲动(原件读取仍被边界拦)。
-    // 复审 整改:合并为单条(与 unmet/boundary 同构)——分条时 8 来源×2+固定 4 条
+    // 独立复审 整改:合并为单条(与 unmet/boundary 同构)——分条时 8 来源×2+固定 4 条
     // 必然撞 20 条上限,常态交棒会整体报错;合并只牺牲极端场景的部分明细长度(clipFact 截断有标注)。
     const detailFacts = handoff.detailData.length > 0
       ? [clipFact(handoff.detailData.join('；'))]
@@ -402,7 +402,7 @@ export class ManagerOrchestrator {
     if (!this.accepting) return 'gone'
     let internalSessionId: string | undefined
     try {
-      const selection = await this.deps.selection()
+      const selection = await this.deps.selection(run.targetRoleId)
       const detail = await this.deps.sessions.createInternalSession({
         roleId: run.targetRoleId,
         workspacePath: envelope.allowedWorkspacePaths[0]!,
@@ -555,7 +555,7 @@ export class ManagerOrchestrator {
       throw new Error('这条派活刚好结束了,补充要求没有生效;请让小柊重新派活')
     }
     // 3. 推送(followupCount 已变,卡片要跟着显示);返回前重读状态——
-    // 投递与落库都成功但 run 恰在此间收终态时不宣称"已送达"(复审整改复验:
+    // 投递与落库都成功但 run 恰在此间收终态时不宣称"已送达"(codex 整改复验:
     // 三联组合"计数+1+消息无人消费+宣称成功"必须不可能;如实告知让小柊重新安排)
     const updated = await this.deps.roles.getAgentRun(run.runId)
     if (updated) await this.emit(updated)
@@ -600,7 +600,7 @@ export class ManagerOrchestrator {
         '派活被打断，本次未执行',
       )
     } else {
-      // awaiting 阶段:精确拒绝该 run 的未决派活卡,spawn 调用立即收敛(阶段复审整改)
+      // awaiting 阶段:精确拒绝该 run 的未决派活卡,spawn 调用立即收敛(codex 阶段复审整改)
       this.deps.approvals.abortDelegationForRun(runId, '派活被打断，本次未派出')
     }
     await this.emit(interrupted)

@@ -1,6 +1,16 @@
 /* 聊天窗 —— 核心交互层:规整墨色、清晰字阶、正常留白,无水墨特效 */
 /* 会话信息已上移到标题栏;模型/思考/用量等控件收进输入框工具行 */
 
+/* ChatView 根容器(A-28 起包一层):协作链面板锚定在这里;
+   详情态的对话区压窄规则在 manager.css(与面板宽度同源) */
+.chat-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
 /* 消息流 */
 .message-scroll {
   flex: 1;
@@ -82,6 +92,55 @@
 }
 .msg-error .btn {
   align-self: flex-start;
+}
+
+/* 压缩提示行(A-29):消息流里的低调系统行——居中墨色小字,可展开看摘要,不弹不闹 */
+.msg-compaction {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.msg-compaction-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.msg-compaction-toggle:hover {
+  color: var(--ink);
+}
+.msg-compaction-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: .55;
+  transform: translateY(-1px);
+  flex: 0 0 auto;
+}
+.msg-compaction-more {
+  font-size: 12px;
+}
+/* 展开的摘要:与思考块同语言——左侧细竖线缩进,弱化小字,全文不裁切 */
+.msg-compaction-summary {
+  align-self: stretch;
+  margin: 0 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* 工具状态行(读操作等免确认工具) */
@@ -317,6 +376,39 @@
 }
 .model-switch-guide {
   padding: 4px 8px 2px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+/* 「存为该角色默认」(A-24):面板底部细线分隔,克制文字按钮 */
+.model-switch-save {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 4px 4px 2px;
+  border-top: 1px solid var(--line);
+}
+.model-switch-save-btn {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--fb-radius-sm);
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.model-switch-save-btn:hover:not([disabled]) {
+  background: var(--ink-hover-06);
+}
+.model-switch-save-btn[disabled] {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.model-switch-save-tip {
+  padding: 0 8px 4px;
   font-size: 12px;
   line-height: 1.7;
   color: var(--muted);

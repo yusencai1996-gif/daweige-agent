@@ -264,9 +264,39 @@ test('派活确认→执行→完成卡→完整过程详情', async () => {
     await expect(card).toContainText('干完了', { timeout: 30_000 })
     await expect(card).toContainText('轮次 1 · 总 token 200')
     await expect(card).toContainText('已按任务简报完成处理')
+
+    // A-25(⑦审补):展开区横条图渲染非零段 + hover 出完整数值 tooltip(视觉验证抓过缺 :hover 的回归)
+    await card.getByRole('button', { name: '展开细节' }).click()
+    const bar = card.locator('.token-segment-bar')
+    await expect(bar).toBeVisible()
+    // scripted 用量=input 100 + output 200 合计,缓存读/写为零——零值段不渲染是设计(不伪造零宽段)
+    await expect(bar.locator('.token-segment')).toHaveCount(2)
+    await bar.hover()
+    // tooltip 带 opacity 过渡,等动画走完再断言终值
+    await expect
+      .poll(
+        async () =>
+          // tsconfig.node 无 DOM lib:结构化类型拿 getComputedStyle(回调实际在渲染进程里跑)
+          bar.evaluate((el) =>
+            (globalThis as unknown as {
+              getComputedStyle(e: unknown, pseudo: string): { readonly opacity: string }
+            }).getComputedStyle(el, '::after').opacity,
+          ),
+        { timeout: 3000 },
+      )
+      .toBe('1')
+    await card.getByRole('button', { name: '收起细节' }).click()
+
     await card.getByRole('button', { name: '查看完整过程' }).click()
-    await expect(win.locator('.run-detail-pane')).toContainText(task)
-    await expect(win.locator('.run-detail-pane')).toContainText('已按任务简报完成处理')
+    // A-28(0.5.0 第三批):「查看完整过程」收编进协作链面板详情态,pin 这张卡的 tab,不切整页
+    const panel = win.locator('.collab-panel')
+    await expect(panel).toHaveClass(/is-detail/, { timeout: 10000 })
+    await expect(panel.locator('.collab-tab.is-active')).toContainText('账房')
+    await expect(panel.locator('.run-process-pane')).toContainText(task, { timeout: 10000 })
+    await expect(panel.locator('.run-process-pane')).toContainText('已按任务简报完成处理')
+    // 旧整页详情路由已删;对话区没离开(输入框还在)
+    await expect(win.locator('.run-detail-pane')).toHaveCount(0)
+    await expect(win.locator('textarea')).toBeVisible()
   } finally {
     await app.close()
   }

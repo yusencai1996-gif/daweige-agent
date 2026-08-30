@@ -2,7 +2,7 @@ import type { RoleRepository } from '../roles/role-repository'
 import { canonicalWorkspaceKey } from '../roles/role-files'
 
 /**
- * 工作区租约门(0.4.0 D,PLAN §6.4/§7.3,阶段复审阻断整改):
+ * 工作区租约门(0.4.0 D,PLAN §6.4/§7.3,codex 阶段复审阻断整改):
  * delegated run 持有租约期间,普通用户会话/总管会话的**写与命令**不得碰被占根
  * (读不受限)——fail-closed 并给人话提示,不弹一张注定不能执行的写卡。
  * delegated child 自身不经过这里:它的互斥在 acquireLeasesAndStart 启动时已保证。

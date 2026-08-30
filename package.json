@@ -1,7 +1,7 @@
 {
   "name": "daweige-agent",
   "productName": "大微阁",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "description": "大微阁——桌面 AI 干活助理(水墨风,pi runtime,自填 API key)",
   "private": true,
   "type": "module",

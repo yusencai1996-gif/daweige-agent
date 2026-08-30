@@ -18,5 +18,5 @@
     "skipLibCheck": true,
     "outDir": "out/tsconfig.web.tsbuildinfo"
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/shared/**/*.ts", "tests/helpers/**/*.ts", "tests/unit/usage-ui/**/*.ts", "tests/unit/roles-ui/**/*.ts", "tests/unit/settings-ui/**/*.ts"]
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/shared/**/*.ts", "tests/helpers/**/*.ts", "tests/unit/usage-ui/**/*.ts", "tests/unit/roles-ui/**/*.ts", "tests/unit/settings-ui/**/*.ts", "tests/unit/manager-ui/**/*.ts", "tests/unit/chat-ui/**/*.ts"]
 }

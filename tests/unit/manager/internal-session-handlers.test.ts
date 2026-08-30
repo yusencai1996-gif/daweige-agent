@@ -43,6 +43,54 @@ beforeEach(() => {
 })
 
 describe('internal 会话的用户 IPC 防线', () => {
+  it('session:create 只按主进程角色设置选模型', async () => {
+    const service = internalRejectingService()
+    service.create.mockResolvedValue({ summary: { id: 'session-1' }, messages: [] })
+    const settingsStore = {
+      load: vi.fn(async () => ({
+        providerSelection: { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
+        enabledModels: [
+          { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
+          { providerId: 'deepseek', modelId: 'deepseek-v4-flash' },
+        ],
+        roleModelDefaults: {
+          'agent-a1b2c3d4e5f6': { providerId: 'deepseek', modelId: 'deepseek-v4-flash' },
+        },
+      })),
+    }
+    registerSessionHandlers(service as never, undefined, undefined, undefined, settingsStore as never)
+    await handlers.get('session:create')!({ roleId: 'agent-a1b2c3d4e5f6' } as never)
+    expect(service.create).toHaveBeenCalledWith({
+      roleId: 'agent-a1b2c3d4e5f6',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4-flash',
+    })
+  })
+
+  it('message:send 允许池内选择并拒绝池外选择', async () => {
+    const service = {
+      assertUserVisibleSession: vi.fn(),
+      assertSessionNotArchived: vi.fn(),
+    }
+    const agentService = { send: vi.fn(async () => ({ kind: 'chat', role: 'user' })), abort: vi.fn() }
+    const settingsStore = { load: vi.fn(async () => ({
+      providerSelection: { providerId: 'kimi-coding', modelId: 'kimi-for-coding' },
+      enabledModels: [{ providerId: 'deepseek', modelId: 'deepseek-v4-flash' }],
+    })) }
+    registerMessageHandlers(agentService as never, settingsStore as never, undefined, undefined, service as never)
+
+    const allowed = { providerId: 'deepseek', modelId: 'deepseek-v4-flash' }
+    await handlers.get('message:send')!({ sessionId: 'user-1', text: '你好', selection: allowed } as never)
+    expect(agentService.send).toHaveBeenCalledWith('user-1', '你好', allowed)
+
+    await expect(handlers.get('message:send')!({
+      sessionId: 'user-1',
+      text: '伪造',
+      selection: { providerId: 'kimi-coding', modelId: 'pool-outside' },
+    } as never)).rejects.toThrow('所选模型不在已启用模型池中')
+    expect(agentService.send).toHaveBeenCalledTimes(1)
+  })
+
   it('批 1 的 agentRun 两通道已注册:list 为空,getDetail 明确不存在', async () => {
     registerAgentRunHandlers()
     await expect(
