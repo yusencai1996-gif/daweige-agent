@@ -4,7 +4,8 @@ import type {
   CredentialStatus,
   ManagerWorkspaceMigrateRequest,
   ManagerWorkspaceState,
-  MemoryEntry,
+  MemoryListPage,
+  MemoryListPageRequest,
   ProviderId,
   ProviderInfo,
   ProviderSelection,
@@ -17,6 +18,7 @@ import type {
   SessionDetail,
   SessionSummary,
   Settings,
+  SkillListSnapshot,
   UsageDashboard,
 } from '../domain'
 
@@ -318,10 +320,30 @@ export interface IpcRequestMap {
     request: void
     response: readonly Reminder[]
   }
-  /** 记忆管理(设置页):全部记事条目;删除按 id。 */
-  'memory:list': {
+  'skill:list': {
     request: void
-    response: readonly MemoryEntry[]
+    response: SkillListSnapshot
+  }
+  'skill:refresh': {
+    request: void
+    response: SkillListSnapshot
+  }
+  'skill:uninstall': {
+    request: {
+      readonly skillId: string
+      readonly expectedGeneration: number
+    }
+    response: SkillListSnapshot
+  }
+  'skill:openFolder': {
+    request:
+      | { readonly scope: 'global' }
+      | { readonly scope: 'role'; readonly roleId: string }
+    response: void
+  }
+  'memory:list': {
+    request: MemoryListPageRequest
+    response: MemoryListPage
   }
   'memory:delete': {
     request: {
@@ -329,6 +351,16 @@ export interface IpcRequestMap {
     }
     response: {
       readonly deleted: boolean
+      readonly revision: number
+      readonly mergeState: import('../domain/memory').MemoryMergeState
+    }
+  }
+  'memory:clear': {
+    request: void
+    response: {
+      readonly deletedCount: number
+      readonly revision: number
+      readonly mergeState: import('../domain/memory').MemoryMergeState
     }
   }
   /** 使用统计(侧边栏独立入口):一次返回整页数据,四区域同源;筛选由前端本地派生。 */

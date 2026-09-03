@@ -504,7 +504,7 @@ describe('协作链原语(edges/inputs/leases)', () => {
     expect(run.graphId).toMatch(/^graph-[a-f0-9]{16}$/)
   })
 
-  it('acquireLeasesAndStart 原子启动:父子路径重叠也算冲突;终态自动释放租约(独立复审整改回归)', async () => {
+  it('acquireLeasesAndStart 原子启动:父子路径重叠也算冲突;终态自动释放租约(codex 复审整改回归)', async () => {
     // run-A 占 C:\ws\reports(经原子启动)
     await repo.createAgentRun({
       runId: 'run-aaaaaaaaaaaaaaaa',
@@ -572,7 +572,7 @@ describe('协作链原语(edges/inputs/leases)', () => {
     expect(await repo.listWorkspaceLeases()).toEqual([])
   })
 
-  it('handoff 校验:自环/来源未完成拒绝;合法交棒落库(独立复审整改回归)', async () => {
+  it('handoff 校验:自环/来源未完成拒绝;合法交棒落库(codex 复审整改回归)', async () => {
     const graphId = newGraphId()
     // source-d:先停在 running(未完成)
     await repo.createAgentRun({
@@ -652,7 +652,7 @@ describe('协作链原语(edges/inputs/leases)', () => {
     expect(f.graphId).toBe(graphId)
   })
 
-  it('parentRunId 跨图拒绝(独立复审整改回归)', async () => {
+  it('parentRunId 跨图拒绝(codex 复审整改回归)', async () => {
     await repo.createAgentRun({
       runId: 'run-1234567890abc003',
       managerSessionId: 'mgr-1',

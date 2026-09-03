@@ -209,7 +209,7 @@ export class UsageStore {
     })
   }
 
-  /** 整页统计快照:四类聚合在只读事务内完成——跨进程并发写下也保证同源一致(独立复审 B-03)。 */
+  /** 整页统计快照:四类聚合在只读事务内完成——跨进程并发写下也保证同源一致(codex 复审 B-03)。 */
   buildDashboard(nowMs: number, timeZone: string): Promise<UsageDashboard> {
     return this.enqueue(() => {
       this.db.exec('BEGIN DEFERRED')

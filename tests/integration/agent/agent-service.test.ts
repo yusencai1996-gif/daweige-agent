@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -16,6 +16,8 @@ import { SessionRepository } from '../../../src/main/storage/session-repository'
 import { SessionService } from '../../../src/main/storage/session-service'
 import { UsageStore } from '../../../src/main/usage/usage-store'
 import { UsageService, type UsageRecorder } from '../../../src/main/usage/usage-service'
+import { GlobalMemoryStore } from '../../../src/main/memory/global-memory-store'
+import { createMemoryPromptProvider } from '../../../src/main/memory/memory-prompt'
 import type { AgentPushEvent } from '../../../src/shared/ipc/events'
 import type { ProviderSelection } from '../../../src/shared/domain/provider'
 import { createRoleFixture, type RoleFixture } from '../helpers/role-fixture'
@@ -57,6 +59,7 @@ async function setup(
   compactionService?: CompactionRunner,
   contextWindow?: number,
   toolchain?: AgentServiceDeps['toolchain'],
+  extraDeps: Partial<Pick<AgentServiceDeps, 'memoryPrompt' | 'memoryConsolidation' | 'orchestrationPrompt'>> = {},
 ): Promise<Ctx> {
   const faux = fauxProvider({
     tokensPerSecond,
@@ -86,6 +89,7 @@ async function setup(
     usageRecorder,
     ...(compactionService ? { compactionService } : {}),
     ...(toolchain ? { toolchain } : {}),
+    ...extraDeps,
   })
   return {
     agentService,
@@ -231,6 +235,35 @@ describe('AgentService(faux 流式)', () => {
     await ctx.repo.close()
   })
 
+  it('state.json 损坏时 memoryPrompt 零注入降级，ensureAgent 与聊天继续且只诊断一次', async () => {
+    const memoryRoot = join(dir, 'broken-memory')
+    const memoryStore = new GlobalMemoryStore(memoryRoot)
+    await memoryStore.initialize()
+    await writeFile(join(memoryRoot, 'state.json'), '{broken-json', 'utf8')
+    const diagnostics: string[] = []
+    const memoryPrompt = createMemoryPromptProvider(memoryStore, (message) => diagnostics.push(message))
+    const ctx = await setup(
+      [(context) => {
+        expect(String(context.systemPrompt)).not.toContain('记忆使用指南')
+        return fauxAssistantMessage('记忆故障不影响聊天')
+      }],
+      10000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { memoryPrompt },
+    )
+    const sid = await createSession(ctx)
+    const result = await ctx.agentService.run({ sessionId: sid, text: '继续聊天', selection: ctx.selection })
+    expect(result).toMatchObject({ status: 'completed', finalText: '记忆故障不影响聊天' })
+    expect(await memoryPrompt()).toBe('')
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]).toContain('零注入降级')
+    await expect(memoryStore.list()).rejects.toThrow()
+    await ctx.repo.close()
+  })
+
   it('压缩期间第二次 send 被 busy 门拒绝，abort 同时取消压缩', async () => {
     let started = false
     let aborted = false
@@ -258,11 +291,26 @@ describe('AgentService(faux 流式)', () => {
 
   it('internal AgentRun 会话即使超阈值也不启用压缩', async () => {
     const execute = vi.fn()
+    const mergeStart = vi.fn(async () => {})
+    const memoryPrompt = vi.fn(async () => 'INTERNAL_MUST_NOT_SEE_MEMORY')
     const ctx = await setup(
-      [fauxAssistantMessage('内部任务完成')],
+      [(context) => {
+        expect(String(context.systemPrompt)).not.toContain('INTERNAL_MUST_NOT_SEE_MEMORY')
+        expect(context.tools?.map((tool) => tool.name)).not.toContain('memory.read')
+        expect(context.tools?.map((tool) => tool.name)).not.toContain('save_memory')
+        return fauxAssistantMessage('内部任务完成')
+      }],
       10000,
       undefined,
       { execute },
+      undefined,
+      async () => ({
+        tools: [
+          { name: 'memory.read', label: 'read', description: 'read', parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) },
+          { name: 'save_memory', label: 'save', description: 'save', parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) },
+        ],
+      }),
+      { memoryPrompt, memoryConsolidation: { start: mergeStart } },
     )
     const detail = await ctx.sessionService.createInternalSession({
       roleId: roleFx.roleId,
@@ -278,6 +326,8 @@ describe('AgentService(faux 流式)', () => {
     })
     expect(result.status).toBe('completed')
     expect(execute).not.toHaveBeenCalled()
+    expect(memoryPrompt).not.toHaveBeenCalled()
+    expect(mergeStart).not.toHaveBeenCalled()
     await ctx.repo.close()
   })
 
@@ -344,6 +394,34 @@ describe('AgentService(使用统计挂钩)', () => {
     return { ...ctx, usageService, usageStore, usageEvents }
   }
 
+  it('memory consolidation auxiliary usage 按 sessionId+sourceId 幂等且归入当前会话/全局', async () => {
+    const usageEvents: AgentPushEvent[] = []
+    const store = new UsageStore(join(dir, 'aux-usage.sqlite'))
+    const service = new UsageService(store, {
+      emitEvent: (event) => usageEvents.push(event),
+      iterateUsageEntries: () => [],
+      logError: () => {},
+    })
+    const mergeModel = fauxProvider({ provider: 'kimi-coding' }).getModel()
+    const input = {
+      sourceId: 'memory-merge:7',
+      sessionId: 'user-session-1',
+      model: mergeModel,
+      usage: {
+        input: 10, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 18,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      occurredAt: Date.now(),
+      stopReason: 'memory-consolidation' as const,
+    }
+    await Promise.all([service.recordAuxiliaryUsage(input), service.recordAuxiliaryUsage(input)])
+    await waitFor(() => usageEvents.some((event) => event.type === 'usage_updated'))
+    const dashboard = await service.getDashboard()
+    expect(dashboard.overview.totalTokens).toBe(18)
+    expect((await store.getSessionTotals(['user-session-1'])).get('user-session-1')?.totalTokens).toBe(18)
+    await store.drainAndClose()
+  })
+
   it('一轮回复:usage 落库 + usage_updated 推送 + dashboard 可见', async () => {
     const ctx = await setupWithUsage([fauxAssistantMessage('统计挂钩测试回复,长度足够产生用量。')])
     const sid = await createSession(ctx)
@@ -404,7 +482,7 @@ describe('AgentService(使用统计挂钩)', () => {
     expect(dashboard.hasData).toBe(true)
     expect(dashboard.overview.totalTokens).toBeGreaterThan(0)
 
-    // 回填幂等:全新 service/store 重跑同一会话库,总量不翻倍(独立复审测试缺口)
+    // 回填幂等:全新 service/store 重跑同一会话库,总量不翻倍(codex 复审测试缺口)
     const usageStore2 = new UsageStore(join(dir, 'usage.sqlite'))
     const usageService2 = new UsageService(usageStore2, {
       emitEvent: () => {},
@@ -420,7 +498,7 @@ describe('AgentService(使用统计挂钩)', () => {
     await repo2.close()
   })
 
-  it('回填遇坏行只丢自己,不阻断后续行(独立复审 B-02)', async () => {
+  it('回填遇坏行只丢自己,不阻断后续行(codex 复审 B-02)', async () => {
     const store = new UsageStore(join(dir, 'usage.sqlite'))
     const at = Date.UTC(2026, 7, 24, 2)
     const poison = {

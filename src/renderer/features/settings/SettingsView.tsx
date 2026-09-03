@@ -11,12 +11,13 @@ import type { UpdateState } from '../../../shared/domain/update'
 import type { DaweigeBridge } from '../../../shared/ipc/bridge'
 import type { ConnectivityResult } from '../../../shared/ipc/contracts'
 import { MemoryPanel } from './MemoryPanel'
+import { SkillPanel } from './SkillPanel'
 import { AboutPanel } from './AboutPanel'
 import { ModelPicker } from './ModelPicker'
 import { ManagerWorkspacePanel } from './ManagerWorkspacePanel'
 import { RoleDefaultModelPanel } from './RoleDefaultModelPanel'
 
-type SettingsSection = 'keys' | 'memory' | 'workspace' | 'about'
+type SettingsSection = 'keys' | 'skills' | 'memory' | 'workspace' | 'about'
 
 interface SettingsViewProps {
   readonly bridge: DaweigeBridge
@@ -161,6 +162,15 @@ export function SettingsView({
           <button
             type="button"
             role="tab"
+            aria-selected={section === 'skills'}
+            className={section === 'skills' ? 'provider-tab active' : 'provider-tab'}
+            onClick={() => setSection('skills')}
+          >
+            技能
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={section === 'memory'}
             className={section === 'memory' ? 'provider-tab active' : 'provider-tab'}
             onClick={() => setSection('memory')}
@@ -187,7 +197,9 @@ export function SettingsView({
           </button>
         </div>
 
-        {section === 'memory' ? (
+        {section === 'skills' ? (
+          <SkillPanel bridge={bridge} />
+        ) : section === 'memory' ? (
           <MemoryPanel bridge={bridge} />
         ) : section === 'workspace' ? (
           <ManagerWorkspacePanel bridge={bridge} />

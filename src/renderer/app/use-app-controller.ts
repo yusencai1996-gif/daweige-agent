@@ -7,6 +7,8 @@ import type {
   DelegationApprovalRequest,
   FileApprovalRequest,
   CommandApprovalRequest,
+  SkillCandidateApprovalRequest,
+  SkillInstallApprovalRequest,
   ChatMessage,
   CredentialStatus,
   ProviderId,
@@ -59,8 +61,12 @@ export interface ApprovalCardState {
   readonly sessionId: string
   /** 展示会话(0.3.0,PLAN §10.4):child 的文件卡 sessionId=internal,surfaceSessionId=manager 用户会话;普通会话与 sessionId 相同。 */
   readonly surfaceSessionId: string
-  /** 文件/守则卡;command(0.4.0 C)卡最小过渡先共用此浮层,C4 换专用渲染;delegation(0.3.0)不入此列表(由派活卡渲染)。 */
-  readonly request: FileApprovalRequest | CommandApprovalRequest
+  /** 文件/守则/命令卡 + 技能候选/安装卡(0.7.0,kind 路由在 ChatView);delegation(0.3.0)不入此列表(由派活卡渲染)。 */
+  readonly request:
+    | FileApprovalRequest
+    | CommandApprovalRequest
+    | SkillCandidateApprovalRequest
+    | SkillInstallApprovalRequest
   readonly phase: ApprovalPhase
   /** 已发过 approval:respond(重复点击只发送一次的守卫)。 */
   readonly responded: boolean
@@ -182,6 +188,8 @@ export interface AppController {
     card: ApprovalCardState,
     decision: ApprovalDecision,
     note: string,
+    /** skill-candidate 批准时必传(候选数据自带的 opaque optionId);其余审批不传。 */
+    selectedOptionId?: string,
   ) => Promise<void>
   // 派活卡(0.3.0,PLAN §10.2):当前打开的 manager 用户会话名下的 run 列表(其他会话恒空)
   readonly agentRuns: readonly AgentRunSummary[]
@@ -462,7 +470,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
   const settingsRef = useRef<Settings | null>(null)
   settingsRef.current = settings
   /**
-   * settings 写入串行链(独立复审整改):settings:update 是整份快照写回,
+   * settings 写入串行链(codex 复审整改):settings:update 是整份快照写回,
    * 并发写会互相覆盖(快速连续勾选丢勾、旧响应回滚新状态)。
    * 所有变更排队执行;链内维护权威最新值——setSettings 后 re-render 是异步的,
    * 链内下一步不能读 settingsRef(它还是旧值),只能读链尾值。
@@ -954,6 +962,28 @@ export function useAppController(bridge: DaweigeBridge): AppController {
     }, 200)
   }, [bridge, loadRunDetail])
 
+  /** memory_changed 防抖计时器(0.6.0 F2):400ms 窗口合并成一次提醒重拉。 */
+  const reminderSyncTimerRef = useRef<number | null>(null)
+
+  /**
+   * 记忆变化(0.6.0):删除/清空/迁移会影响启动提醒列表,防抖重拉 reminder:listUpcoming;
+   * 已点掉提醒的条目若被删,从点掉名单里一并清掉(名单不挂孤儿)。
+   */
+  const scheduleReminderSync = useCallback(() => {
+    if (reminderSyncTimerRef.current !== null) return
+    reminderSyncTimerRef.current = window.setTimeout(() => {
+      reminderSyncTimerRef.current = null
+      bridge
+        .invoke('reminder:listUpcoming', undefined)
+        .then((list) => {
+          setReminders([...list])
+          const alive = new Set(list.map((r) => r.memoryId))
+          setDismissedReminders((prev) => prev.filter((id) => alive.has(id)))
+        })
+        .catch(() => undefined)
+    }, 400)
+  }, [bridge])
+
   useEffect(() => {
     const unsubscribe = bridge.onAgentEvent((event: AgentPushEvent) => {
       // 更新状态是应用级事件,与会话无关
@@ -964,6 +994,12 @@ export function useAppController(bridge: DaweigeBridge): AppController {
       // usage 更新通知(初审-严重,PLAN §9.2):防抖重拉 run 列表/详情,补齐晚落库的用量
       if (event.type === 'usage_updated') {
         scheduleUsageSync()
+        return
+      }
+      // 记忆变化(0.6.0 F2):事件没有 sessionId 和正文,必须在读 event.sessionId 的分流之前处理;
+      // 这里只防抖重拉提醒,记忆面板自身的重拉由面板订阅负责
+      if (event.type === 'memory_changed') {
+        scheduleReminderSync()
         return
       }
       // 派活状态变化(0.3.0):upsert 进当前 manager 会话的 run 列表,卡片原位变状态(PLAN §10.2)
@@ -1049,6 +1085,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
             )
             break
           }
+          // 技能候选/安装卡(0.7.0)与其他卡同入浮层列表,kind 路由在 ChatView 完成;
           // command(0.4.0 C)卡先并入通用浮层最小过渡(C4 前端批再换 CommandApprovalCard 专用渲染)
           const request = event.request
           setAllApprovals((prev) => [
@@ -1179,8 +1216,12 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         window.clearTimeout(usageSyncTimerRef.current)
         usageSyncTimerRef.current = null
       }
+      if (reminderSyncTimerRef.current !== null) {
+        window.clearTimeout(reminderSyncTimerRef.current)
+        reminderSyncTimerRef.current = null
+      }
     }
-  }, [bridge, loadRunDetail, loadAgentGraph, markGraphDirty, markRunDetailStale, scheduleRunDetailSync, scheduleUsageSync])
+  }, [bridge, loadRunDetail, loadAgentGraph, markGraphDirty, markRunDetailStale, scheduleRunDetailSync, scheduleUsageSync, scheduleReminderSync])
 
   /** 当前会话的消息流事件(message 系列、agent_error、agent_end)。 */
   const handleChatEvent = (event: AgentPushEvent): void => {
@@ -1657,7 +1698,7 @@ export function useAppController(bridge: DaweigeBridge): AppController {
 
   /* ============ 确认卡片 ============ */
   const respondApproval = useCallback(
-    async (card: ApprovalCardState, decision: ApprovalDecision, note: string) => {
+    async (card: ApprovalCardState, decision: ApprovalDecision, note: string, selectedOptionId?: string) => {
       if (card.responded) return // 重复点击只发送一次
       const trimmedNote = note.trim()
       setAllApprovals((prev) =>
@@ -1676,6 +1717,8 @@ export function useAppController(bridge: DaweigeBridge): AppController {
         await bridge.invoke('approval:respond', {
           approvalId: card.request.id,
           decision,
+          // selectedOptionId 只在 skill-candidate 批准时携带(契约语义校验位在 schemas.ts)
+          ...(selectedOptionId !== undefined ? { selectedOptionId } : {}),
           ...(decision === 'reject' && trimmedNote !== '' ? { note: trimmedNote } : {}),
         })
       } catch (error) {

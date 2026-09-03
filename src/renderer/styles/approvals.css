@@ -185,3 +185,134 @@
   font-size: 12.5px;
   color: var(--muted);
 }
+
+/* ============ 0.7.0 技能审批卡(候选选择 A1 / 安装预览 A2 / 技能写入预览 B1) ============ */
+/* 小徽标:与 SkillPanel 的 .skill-item-badge 同一视觉语言(描边+弱化字) */
+.approval-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* 候选列表:1~8 条,自身限高滚动,操作键不被顶出可视区 */
+.skill-candidate-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 236px;
+  overflow-y: auto;
+}
+.skill-candidate-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    background-color .15s cubic-bezier(.2, 0, 0, 1),
+    border-color .15s cubic-bezier(.2, 0, 0, 1);
+}
+.skill-candidate-option:hover {
+  background: var(--ink-hover-04);
+}
+/* 选中态:朱砂淡描边+极浅底(与诊断警示同一 color-mix 派生法,不新增色值) */
+.skill-candidate-option.selected {
+  border-color: color-mix(in oklch, var(--accent) 45%, transparent);
+  background: color-mix(in oklch, var(--accent) 6%, transparent);
+}
+.skill-candidate-option input[type='radio'] {
+  margin: 3px 0 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+.skill-candidate-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.skill-candidate-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* 长英文 slug/长中文名允许任意折行,不横向撑破 */
+.skill-candidate-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.skill-candidate-summary {
+  font-size: 12.5px;
+  color: var(--muted);
+  word-break: break-word;
+}
+.skill-candidate-meta {
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* 安装预览卡的来源块:与候选行同语言,但不可点 */
+.skill-install-source {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+/* Markdown 正文预览(A2/B1 共用):等宽、双向滚动上限、pre-wrap 永不横向撑破 */
+.approval-markdown-info {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.approval-markdown {
+  margin-top: 6px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 9px 12px;
+  background: var(--ink-hover-04);
+  border: 1px solid var(--line);
+  border-radius: 5px 7px 4px 6px;
+}
+.approval-markdown pre {
+  margin: 0;
+}
+.approval-markdown code {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 截断态中间标记:虚线分隔 + 朱砂提示字,明确「看的不是全部」 */
+.approval-truncate-marker {
+  margin: 8px 0;
+  padding: 4px 0;
+  border-top: 1px dashed var(--line);
+  border-bottom: 1px dashed var(--line);
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+/* WRITE 卡技能分支的标识行(全局技能/纯 Markdown/新对话生效) */
+.skill-write-flags {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}

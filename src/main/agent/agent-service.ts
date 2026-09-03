@@ -38,6 +38,7 @@ import {
   type RolePromptLayer,
 } from './prompt-composer'
 import { redactCommonSecrets } from '../security/redaction'
+import type { SessionSkillContext } from '../skills/skill-catalog-service'
 
 /**
  * Agent Service(M3-04):每个活跃会话一个 pi Agent。
@@ -98,11 +99,19 @@ export interface AgentServiceDeps {
   ) => SessionToolchain | Promise<SessionToolchain>
   /** 静态上下文附注(M5:已有记事摘要),追加到系统提示词。 */
   contextNotes?: () => Promise<readonly string[]>
+  /** 0.6.0 常驻记忆层；dirty/failed 时由实现返回现存 notes fallback。 */
+  memoryPrompt?: () => Promise<string>
+  /** 0.6.0 全局单飞合并；AgentService 只为用户可见会话后台触发。 */
+  memoryConsolidation?: {
+    start(input: { sessionId: string; model: Model<Api> }): Promise<void>
+  }
   /**
    * 会话的角色提示词层(0.2.0):每回合现场读取最新守则;
    * 未提供(会话无绑定/角色功能未初始化)时只有全局底子。
    */
   rolePrompt?: (sessionId: string) => Promise<RolePromptLayer | undefined>
+  /** 会话首次实例化时冻结；后续 refreshSystemPrompt 不重新扫描。 */
+  skillContext?: (sessionId: string) => Promise<SessionSkillContext>
   /** 0.3.0 每回合现场读取的总管/child 层;不缓存 roster 或 envelope。 */
   orchestrationPrompt?: (sessionId: string) => Promise<{
     readonly manager?: ManagerPromptLayer
@@ -140,6 +149,7 @@ class ActiveAgent {
     readonly session: Session<SqliteSessionMetadata>,
     /** 会话工作目录(建 Agent 时取一次,提示词每回合重拼时复用)。 */
     readonly workspacePath: string,
+    readonly skills: SessionSkillContext | undefined,
   ) {}
 }
 
@@ -272,17 +282,27 @@ export class AgentService implements AgentTurnRunner {
     const compactionEnabled = await this.deps.sessionService.isUserVisibleSession(sessionId)
     // 0.4.0 A:manager 会话的 effective cwd 跟随 resolver 当前值(迁移后旧会话立即指向新位置)
     const effectiveCwd = (await this.deps.managerCwdOverride?.(sessionId)) ?? meta.cwd
-    const [toolchain, memoryNotes, role] = await Promise.all([
+    if (compactionEnabled) {
+      void this.deps.memoryConsolidation?.start({ sessionId, model })
+    }
+    const [rawToolchain, memoryNotes, memoryPrompt, role, skills] = await Promise.all([
       this.deps.toolchain?.({ sessionId, workspacePath: effectiveCwd }),
-      orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
+      !compactionEnabled || orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
+      !compactionEnabled || orchestration?.delegation ? '' : (this.deps.memoryPrompt?.() ?? ''),
       this.deps.rolePrompt?.(sessionId),
+      this.deps.skillContext?.(sessionId),
     ])
+    const toolchain = compactionEnabled ? rawToolchain : excludeInternalMemoryTools(rawToolchain)
 
     const agent = new Agent({
       initialState: {
         systemPrompt: composeSystemPrompt({
           workspacePath: effectiveCwd,
           memories: memoryNotes ?? [],
+          memoryPrompt,
+          skillsCatalog: skills?.promptFragment,
+          skillMarketPolicy: compactionEnabled && !orchestration?.delegation,
+          skillReflection: compactionEnabled && !orchestration?.delegation,
           role,
           ...(orchestration?.manager ? { manager: orchestration.manager } : {}),
           ...(orchestration?.delegation ? { delegation: orchestration.delegation } : {}),
@@ -291,7 +311,7 @@ export class AgentService implements AgentTurnRunner {
             : {}),
         }),
         model,
-        tools: toolchain?.tools ?? [],
+        tools: [...(toolchain?.tools ?? []), ...(skills?.tools ?? [])],
         messages: buildSessionContext(entries).messages,
       },
       streamFn: (m, context, options) => {
@@ -321,7 +341,7 @@ export class AgentService implements AgentTurnRunner {
       beforeToolCall: toolchain?.beforeToolCall,
     })
 
-    const active = new ActiveAgent(sessionId, agent, session, effectiveCwd)
+    const active = new ActiveAgent(sessionId, agent, session, effectiveCwd, skills)
     active.compactionEnabled = compactionEnabled
     agent.shouldStopAfterTurn = ({ context }) => {
       if (!active.compactionEnabled) return false
@@ -347,13 +367,24 @@ export class AgentService implements AgentTurnRunner {
   /** 每回合重读最新角色守则+记事索引,重建系统提示词(守则改动下一条消息生效)。 */
   private async refreshSystemPrompt(active: ActiveAgent): Promise<void> {
     const orchestration = await this.deps.orchestrationPrompt?.(active.sessionId)
-    const [memoryNotes, role] = await Promise.all([
-      orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
+    if (active.compactionEnabled && !orchestration?.delegation) {
+      void this.deps.memoryConsolidation?.start({
+        sessionId: active.sessionId,
+        model: active.agent.state.model,
+      })
+    }
+    const [memoryNotes, memoryPrompt, role] = await Promise.all([
+      !active.compactionEnabled || orchestration?.delegation ? [] : (this.deps.contextNotes?.() ?? []),
+      !active.compactionEnabled || orchestration?.delegation ? '' : (this.deps.memoryPrompt?.() ?? ''),
       this.deps.rolePrompt?.(active.sessionId),
     ])
     active.agent.state.systemPrompt = composeSystemPrompt({
       workspacePath: active.workspacePath,
       memories: memoryNotes ?? [],
+      memoryPrompt,
+      skillsCatalog: active.skills?.promptFragment,
+      skillMarketPolicy: active.compactionEnabled && !orchestration?.delegation,
+      skillReflection: active.compactionEnabled && !orchestration?.delegation,
       role,
       ...(orchestration?.manager ? { manager: orchestration.manager } : {}),
       ...(orchestration?.delegation ? { delegation: orchestration.delegation } : {}),
@@ -637,6 +668,24 @@ export class AgentService implements AgentTurnRunner {
 
   private push(event: AgentPushEvent): void {
     this.deps.emitEvent(event)
+  }
+}
+
+const INTERNAL_MEMORY_TOOL_NAMES = new Set([
+  'memory.add_note',
+  'memory.search',
+  'memory.read',
+  'memory.delete',
+  'memory.clear',
+  'save_memory',
+  'search_memories',
+])
+
+function excludeInternalMemoryTools(toolchain: SessionToolchain | undefined): SessionToolchain | undefined {
+  if (!toolchain) return undefined
+  return {
+    ...toolchain,
+    tools: toolchain.tools.filter((tool) => !INTERNAL_MEMORY_TOOL_NAMES.has(tool.name)),
   }
 }
 

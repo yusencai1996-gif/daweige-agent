@@ -774,7 +774,7 @@ export class RoleRepository {
   }
 
   /**
-   * 守则保存的完整原子块(独立复审 B-01):文件替换与条件递增在同一队列槽内串行执行;
+   * 守则保存的完整原子块(codex 复审 B-01):文件替换与条件递增在同一队列槽内串行执行;
    * 版本未命中(并发方已胜)时恢复原文,保证"最终落盘内容=版本胜出方"。
    */
   runGuardrailsUpdate(
@@ -800,7 +800,7 @@ export class RoleRepository {
     })
   }
 
-  /** 删除启动的事务原子块(独立复审 B-03):lifecycle=deleting 与 job 初始记录同事务。 */
+  /** 删除启动的事务原子块(codex 复审 B-03):lifecycle=deleting 与 job 初始记录同事务。 */
   beginDeletionTransaction(
     roleId: string,
     impactVersion: string,
@@ -2098,7 +2098,7 @@ function parseDelegationResult(
     conclusions: requireStringArray(result.conclusions, 'result.conclusions'),
     artifactPaths: requireStringArray(result.artifactPaths, 'result.artifactPaths'),
     unmetCriteria: requireStringArray(result.unmetCriteria, 'result.unmetCriteria'),
-    // A-19 数据明细:可选字段,旧行没有;键存在就必须是 1~4000 字合法串(独立复审整改:
+    // A-19 数据明细:可选字段,旧行没有;键存在就必须是 1~4000 字合法串(codex 复审整改:
     // 显式 null 不能当缺省放行——解析层对同数据会整块 fallback,读层也要 fail closed 对称)
     ...('detailData' in result
       ? { detailData: requireStringLength(result.detailData, 'result.detailData', 1, 4_000) }

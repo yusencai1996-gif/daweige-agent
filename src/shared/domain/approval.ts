@@ -15,11 +15,13 @@ export type ApprovalKind =
   | 'role-rules-edit' // AI 修改当前角色守则(永远逐次确认,不吃任何会话级授权)
   | 'delegation' // 总管派活确认(0.3.0;同意才派出子 agent,不吃任何会话级授权)
   | 'command' // 命令运行确认(0.4.0;沙箱里跑,审批独立于文件授权)
+  | 'skill-candidate' // 技能市场候选选择(0.7.0;逐次确认)
+  | 'skill-install' // 技能安装预览(0.7.0;逐次确认)
 
 /** 文件/守则操作确认卡(0.1~0.2 既有形态,字段不变)。 */
 export interface FileApprovalRequest {
   readonly id: string
-  readonly kind: Exclude<ApprovalKind, 'delegation' | 'command'>
+  readonly kind: Exclude<ApprovalKind, 'delegation' | 'command' | 'skill-candidate' | 'skill-install'>
   /** 人话标题,如"我要移动 38 个文件"。 */
   readonly title: string
   /** 人话说明:将对哪些文件做什么、影响多少项、是否可恢复。 */
@@ -37,6 +39,33 @@ export interface FileApprovalRequest {
   /** 发起工具名(如 move_paths);UI 据此决定能否显示"本次会话全部允许"。 */
   readonly toolName?: string
   readonly createdAt: number
+  /** 受控技能逻辑 URI 写入时的 Markdown 预览；普通文件写入不提供。 */
+  readonly contentPreview?: string
+}
+
+export interface SkillCandidateApprovalRequest {
+  readonly id: string
+  readonly kind: 'skill-candidate'
+  readonly title: string
+  readonly description: string
+  readonly query: string
+  readonly candidates: readonly import('./skill').SkillMarketCandidate[]
+  readonly createdAt: number
+  readonly toolCallId: string
+}
+
+export interface SkillInstallApprovalRequest {
+  readonly id: string
+  readonly kind: 'skill-install'
+  readonly title: string
+  readonly description: string
+  readonly candidate: import('./skill').SkillMarketCandidate
+  readonly markdownPreview: string
+  readonly markdownBytes: number
+  readonly previewTruncated: boolean
+  readonly targetLogicalLocation: string
+  readonly createdAt: number
+  readonly toolCallId: string
 }
 
 /**
@@ -63,6 +92,8 @@ export interface DelegationApprovalRequest {
 export type ApprovalRequest =
   | FileApprovalRequest
   | DelegationApprovalRequest
+  | SkillCandidateApprovalRequest
+  | SkillInstallApprovalRequest
   | import('./command').CommandApprovalRequest
 
 /**
@@ -75,6 +106,8 @@ export type ApprovalDecision = 'approve' | 'approve-session' | 'reject'
 export interface ApprovalResponse {
   readonly approvalId: string
   readonly decision: ApprovalDecision
+  /** skill-candidate 批准时必填；其余审批禁止携带。 */
+  readonly selectedOptionId?: string
   /** 拒绝时的可选单行附言;非空时作为 block reason 回传模型。 */
   readonly note?: string
 }

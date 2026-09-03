@@ -36,8 +36,8 @@ describe('IPC 契约:通道冻结', () => {
     for (const ch of INVOKE_CHANNELS) {
       expect(isInvokeChannel(ch), `通道 ${ch} 不在清单中`).toBe(true)
     }
-    expect(INVOKE_CHANNELS).toHaveLength(46)
-    expect(new Set(INVOKE_CHANNELS).size).toBe(46)
+    expect(INVOKE_CHANNELS).toHaveLength(51)
+    expect(new Set(INVOKE_CHANNELS).size).toBe(51)
   })
 
   it('request 非 void 的通道必须注册运行时 schema(0.2.1 热修教训:漏注册→"不接受任何参数")', () => {
@@ -49,7 +49,9 @@ describe('IPC 契约:通道冻结', () => {
       'role:list',
       'session:list',
       'reminder:listUpcoming',
-      'memory:list',
+      'skill:list',
+      'skill:refresh',
+      'memory:clear',
       'usage:getDashboard',
       'app:checkUpdate',
       'update:download',
@@ -187,6 +189,19 @@ describe('IPC 契约:入参运行时校验', () => {
       note: '二月的先别动',
     })
     expect(r.ok).toBe(true)
+  })
+
+  it('approval:respond 的 selectedOptionId 只接受短 opaque id', () => {
+    expect(validateRequest('approval:respond', {
+      approvalId: 'approval-abc12345',
+      decision: 'approve',
+      selectedOptionId: 'option_abc123',
+    }).ok).toBe(true)
+    for (const selectedOptionId of ['short', 'owner/slug', 'https://example.test/skill', 'x'.repeat(65)]) {
+      expect(validateRequest('approval:respond', {
+        approvalId: 'approval-abc12345', decision: 'approve', selectedOptionId,
+      }).ok).toBe(false)
+    }
   })
 
   it('request 为 void 的通道:不接受多余 payload', () => {
@@ -378,7 +393,7 @@ describe('IPC 契约:apiKey 红线', () => {
   it('运行时:REQUEST_SCHEMAS 中只有 credential:save 含 apiKey 属性', () => {
     const channelsWithApiKey: string[] = []
     for (const [channel, schema] of Object.entries(REQUEST_SCHEMAS)) {
-      if (schema && 'apiKey' in schema.properties) {
+      if (schema && 'properties' in schema && 'apiKey' in schema.properties) {
         channelsWithApiKey.push(channel)
       }
     }

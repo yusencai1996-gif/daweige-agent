@@ -3,6 +3,7 @@ import type { FileApprovalRequest } from '../../shared/domain/approval'
 import type { PathPolicy } from '../files/path-policy'
 import { isStrictDelegationPathPolicy } from '../files/path-policy'
 import type { ApprovalBroker } from './approval-broker'
+import type { ManagedSkillWriteResolver } from '../skills/managed-skill-write'
 
 /**
  * 确认闸门(M4-02 集成):Agent 的 beforeToolCall 钩子。
@@ -13,13 +14,27 @@ import type { ApprovalBroker } from './approval-broker'
  */
 
 const READ_TOOLS = new Set(['read_file', 'list_directory', 'read_docx', 'read_workbook'])
-const MEMORY_TOOLS = new Set(['save_memory', 'search_memories'])
+const INTERNAL_READ_TOOLS = new Set([
+  'memory.add_note', 'memory.search', 'memory.read',
+  'save_memory', 'search_memories', 'read_skill',
+])
+const SELF_APPROVING_TOOLS = new Set(['run_command', 'search_skills', 'install_skill'])
+/** 总管协作工具(0.3.0 起):审批由 manager-orchestrator 专属入口(派活/交棒确认卡)自管,gate 直通不重复拦(0.7.0 B 批给 manager 会话挂 gate 时补,防掉进"未登记"兜底拒绝)。 */
+const ORCHESTRATOR_TOOLS = new Set([
+  'spawn_role_agent',
+  'send_message',
+  'wait_agents',
+  'list_agents',
+  'followup_task',
+  'interrupt_agent',
+])
 /** 守则工具(0.2.0):永远逐次弹卡,不吃任何会话级授权(红线,PLAN §3.3)。 */
 const ROLE_RULES_TOOLS = new Set(['edit_role_guardrails'])
 const WRITE_TOOLS = new Set([
   'write_file',
   'edit_file',
   'write_docx',
+  'write_pptx',
   'write_workbook',
   'move_paths',
   'rename_path',
@@ -31,6 +46,7 @@ const WRITE_TOOLS = new Set([
 const KIND_BY_TOOL: Record<string, FileApprovalRequest['kind']> = {
   write_file: 'write',
   write_docx: 'write',
+  write_pptx: 'write',
   write_workbook: 'write',
   edit_file: 'edit',
   move_paths: 'move',
@@ -57,6 +73,8 @@ export interface ApprovalGateDeps {
    * gate 直接 block——不弹注定不能执行的写卡(delegated child 不接:它自己就是租约方)。
    */
   assertNotLeased?: (paths: readonly string[]) => Promise<void>
+  /** 受控技能 URI 只在用户可见会话注入。 */
+  managedSkillWrite?: ManagedSkillWriteResolver
 }
 
 export function createApprovalGate(deps: ApprovalGateDeps) {
@@ -66,11 +84,12 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
     const name = context.toolCall.name
     const args = (argsOf(context) ?? {}) as Record<string, unknown>
 
-      if (MEMORY_TOOLS.has(name)) return undefined
+      if (INTERNAL_READ_TOOLS.has(name)) return undefined
 
       // run_command(0.4.0 C3):审批语义完全不同(策略三级+精确命令缓存),
       // 由工具内部自管(见 tools/run-command.ts);gate 放行,不重复拦截。
-      if (name === 'run_command') return undefined
+      if (SELF_APPROVING_TOOLS.has(name)) return undefined
+      if (ORCHESTRATOR_TOOLS.has(name)) return undefined
 
       if (ROLE_RULES_TOOLS.has(name)) {
         // 改守则必须用户点头:每次调用都弹卡,用户拒绝/超时即不落盘。
@@ -126,6 +145,41 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
     }
 
     if (WRITE_TOOLS.has(name)) {
+      if (name === 'write_file' && typeof args['path'] === 'string' && typeof args['content'] === 'string') {
+        let managed
+        try {
+          managed = await deps.managedSkillWrite?.resolve(args['path'], args['content'], deps.sessionId)
+        } catch (error) {
+          return { block: true, reason: error instanceof Error ? error.message : '技能内容没有通过安全检查。' }
+        }
+        if (managed) {
+          const outcome = await withApprovalLifecycle(deps, () => deps.broker.request({
+            sessionId: deps.sessionId,
+            ...(deps.surfaceSessionId !== undefined ? { surfaceSessionId: deps.surfaceSessionId } : {}),
+            kind: 'write',
+            toolCallId: context.toolCall.id,
+            toolName: name,
+            title: `我要新建全局技能「${managed.name}」`,
+            description: `写入:${managed.logicalPath}。这是纯 Markdown 技能，只能新建；批准后新开的对话才能使用。`,
+            itemCount: 1,
+            samplePaths: [managed.logicalPath],
+            recoverable: false,
+            outsideWorkspace: false,
+            contentPreview: managed.markdown,
+          }))
+          if (outcome.decision !== 'approve' && outcome.decision !== 'approve-session') {
+            await deps.managedSkillWrite!.discard(managed, deps.sessionId)
+            return settle(outcome)
+          }
+          try {
+            await deps.managedSkillWrite!.approve(managed, deps.sessionId)
+            return undefined
+          } catch (error) {
+            await deps.managedSkillWrite!.discard(managed, deps.sessionId)
+            return { block: true, reason: error instanceof Error ? error.message : '技能目标在确认期间发生变化。' }
+          }
+        }
+      }
       const affected = pickAffectedPaths(name, args)
       const destination = typeof args['destination_dir'] === 'string' ? (args['destination_dir'] as string) : undefined
       const checkPaths = destination !== undefined ? [...affected, destination] : affected
@@ -281,6 +335,14 @@ export function buildSummary(
       return {
         title: '我要生成 1 个 Word 文档',
         description: `保存到:${first ?? ''}。文档标题「${title}」,约 ${sections} 个小节。${outsideNote}`,
+      }
+    }
+    case 'write_pptx': {
+      const slides = Array.isArray(args['slides']) ? args['slides'] : []
+      const firstSlide = slides[0] as { title?: string } | undefined
+      return {
+        title: '我要生成 1 个演示文稿',
+        description: `保存到:${first ?? ''}。共 ${slides.length} 片${firstSlide?.title ? `,首片标题「${firstSlide.title}」` : ''}。如果文件已存在,原内容会被替换。${outsideNote}`,
       }
     }
     case 'write_workbook': {

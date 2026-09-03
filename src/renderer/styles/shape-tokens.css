@@ -1,10 +1,10 @@
 /**
  * 飞白皴笔 · 公共形态层(0.4.0 B1)
- * 蓝本:shuimo-frontend-design option-a/shape.css + frontend-reference A 主题(用户授权直抄适配)。
+ * 蓝本:shuimo-frontend-design option-a/shape.css + frontend-reference A 主题(森哥授权直抄适配)。
  * 三要素:不规则笔触(非对称圆角+手写倾角)/ 飞白漏纸(条纹叠层)/ 笔锋提按(渐变拼笔形)。
  * 红线:只动形不动色——本文件所有颜色一律 color-mix 派生自 tokens.css 既有六值,零新色;
  *       不改 DOM/逻辑,形态规则集中在此、最后加载(main.tsx),同特异性下覆盖基线样式。
- * 强度定档(B1 验收整改+2026-08-27 用户设计修正):笔触要"缩略图肉眼可辨",但
+ * 强度定档(B1 验收整改+2026-08-27 森哥设计修正):笔触要"缩略图肉眼可辨",但
  * **控件内部一律干净底色,不加任何斜纹/条纹 background-image 底纹**(识档 §二修正):
  * 飞白只落在边框/笔触本体——非对称圆角、2px 笔触边、border-image 枯笔断续、
  * 积墨圆点、朱砂聚焦、转锋弧;进度条的飞白横纹属"笔迹推进"笔画本体(口令保留)。
@@ -176,7 +176,7 @@
   border-right-color: color-mix(in srgb, var(--ink) 45%, transparent);
   border-radius: var(--fb-radius-loader);
   /* 基态的 translateY(-1px) 与 keyframes 的 rotate 函数列表不同,矩阵插值会把
-     旋转整个吞掉(rotate(360°)=单位阵),圈永远静止(用户 0827 真机实测)——显式归零 */
+     旋转整个吞掉(rotate(360°)=单位阵),圈永远静止(森哥 0827 真机实测)——显式归零 */
   transform: none;
   animation: fb-brush-spin var(--fb-spin-duration) linear infinite;
 }
@@ -207,7 +207,7 @@
 
 /* ============ 减少动画:笔触动画降级为静态形(弧静止=残缺墨弧) ============ */
 @media (prefers-reduced-motion: reduce) {
-  /* 状态指示器不全停(用户 0827 真机实测):降级为慢速呼吸,保住"还在干活"的信号 */
+  /* 状态指示器不全停(森哥 0827 真机实测):降级为慢速呼吸,保住"还在干活"的信号 */
   .status-dot.running,
   .delegation-dot.active,
   .tool-status.running .tool-status-dot {

@@ -50,7 +50,7 @@ export interface MessageEntryRow {
   readonly entryId: string
   readonly seq: number
   readonly timestamp: number
-  /** pi 存储的完整 AgentMessage payload;形态由 pi 0.84.2 entries 表决定。 */
+  /** pi 存储的完整 AgentMessage payload;形态由 pi 0.84.4 entries 表决定。 */
   readonly message: unknown
 }
 
@@ -128,11 +128,11 @@ export class SessionRepository {
   }
 
   /**
-   * 惰性分页只读遍历全部会话的 message entries(使用统计回填专用,独立复审 B-01 整改)。
+   * 惰性分页只读遍历全部会话的 message entries(使用统计回填专用,codex 复审 B-01 整改)。
    * 独立只读连接直查 pi 的 entries 表:不 open Session、不取 writer lease;
    * 每页只取 pageSize 行,消费方在批间让出事件循环即不阻塞主线程、内存受控。
    * 行级容错:payload 损坏的行跳过,单行垃圾不中断遍历。
-   * pi 三包锁 0.84.2,payload 形态({message: AgentMessage})随版本核验。
+   * pi 三包锁 0.84.4,payload 形态({message: AgentMessage})随版本核验。
    */
   *iterateUsageEntries(pageSize = 500): Generator<UsageEntryRow, void, void> {
     const db = new DatabaseSync(this.databasePath, { readOnly: true })

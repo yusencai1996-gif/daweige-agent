@@ -39,7 +39,12 @@ afterEach(async () => {
   ])
 }, 20_000)
 
-function makeService(guardrailsGetter: () => string, useRoleBinding: boolean) {
+function makeService(
+  guardrailsGetter: () => string,
+  useRoleBinding: boolean,
+  skillContext?: () => Promise<import('../../../src/main/skills/skill-catalog-service').SessionSkillContext>,
+  memoryPrompt?: () => Promise<string>,
+) {
   const faux = fauxProvider({ tokensPerSecond: 100000 })
   faux.setResponses([fauxAssistantMessage('收到')])
   const models = createModels()
@@ -66,6 +71,8 @@ function makeService(guardrailsGetter: () => string, useRoleBinding: boolean) {
           guardrails: guardrailsGetter(),
         })
       : undefined,
+    ...(skillContext ? { skillContext: async () => skillContext() } : {}),
+    ...(memoryPrompt ? { memoryPrompt } : {}),
   })
 }
 
@@ -127,5 +134,57 @@ describe('守则每回合刷新', () => {
     await waitAgentEnd()
     expect(capturedPrompts[0]).toContain('小柊')
     expect(capturedPrompts[0]).not.toContain('你的角色')
+  })
+
+  it('技能快照只在 ensureAgent 读取一次，每回合刷新提示词仍复用原层', async () => {
+    let calls = 0
+    let marker = 'SKILL_SNAPSHOT_V1'
+    const service = makeService(() => '# 守则', true, async () => {
+      calls += 1
+      return { generation: calls, promptFragment: marker, tools: [] }
+    })
+    const sessionService = new SessionService(repo, roleFx.roleRepository, roleFx.roleService)
+    const session = await sessionService.create({
+      roleId: roleFx.roleId,
+      providerId: 'kimi-coding',
+      modelId: 'faux',
+    })
+    const selection = { providerId: 'kimi-coding' as const, modelId: 'faux' }
+    await service.send(session.summary.id, '第一条', selection)
+    await waitAgentEnd()
+    events.length = 0
+    marker = 'SKILL_SNAPSHOT_V2'
+    await service.send(session.summary.id, '第二条', selection)
+    await waitAgentEnd()
+
+    expect(calls).toBe(1)
+    expect(capturedPrompts[0]).toContain('SKILL_SNAPSHOT_V1')
+    expect(capturedPrompts[1]).toContain('SKILL_SNAPSHOT_V1')
+    expect(capturedPrompts[1]).not.toContain('SKILL_SNAPSHOT_V2')
+    expect(capturedPrompts[0]).toContain('这个做法以后还会复用吗？')
+  })
+
+  it('记忆层每回合刷新，合并成功后的新摘要从下一回合生效', async () => {
+    let memory = 'DIRTY_NOTES_FALLBACK'
+    const service = makeService(() => '# 守则', true, undefined, async () => memory)
+    const sessionService = new SessionService(repo, roleFx.roleRepository, roleFx.roleService)
+    const session = await sessionService.create({
+      roleId: roleFx.roleId,
+      providerId: 'kimi-coding',
+      modelId: 'faux',
+    })
+    const selection = { providerId: 'kimi-coding' as const, modelId: 'faux' }
+    await service.send(session.summary.id, '第一条', selection)
+    await waitAgentEnd()
+    events.length = 0
+    memory = 'CONSOLIDATED_SUMMARY_NEXT_TURN'
+    await service.send(session.summary.id, '第二条', selection)
+    await waitAgentEnd()
+
+    expect(capturedPrompts[0]).toContain('DIRTY_NOTES_FALLBACK')
+    expect(capturedPrompts[1]).toContain('CONSOLIDATED_SUMMARY_NEXT_TURN')
+    expect(capturedPrompts[1]).not.toContain('DIRTY_NOTES_FALLBACK')
+    expect(capturedPrompts[1]!.indexOf('CONSOLIDATED_SUMMARY_NEXT_TURN'))
+      .toBeLessThan(capturedPrompts[1]!.indexOf('可复用套路沉淀建议'))
   })
 })

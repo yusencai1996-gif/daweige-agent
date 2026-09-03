@@ -1,105 +1,70 @@
 import { Type, type Static } from 'typebox'
 import type { AgentTool } from '@earendil-works/pi-agent-core'
-import type { MemoryStore } from '../../memory/memory-store'
-import type { MemoryDate } from '../../../shared/domain/memory'
-
-/**
- * 记事工具(M5-02)。
- * save_memory 写应用内部数据(userData/data/memories.json),免确认卡(PLAN 明确);
- * 保存成功由模型在回复中口头确认("已记住:××")。
- */
+import type { MemoryDate, MemorySource } from '../../../shared/domain/memory'
+import type { GlobalMemoryStore } from '../../memory/global-memory-store'
+import { assertValidMemoryDate } from '../../memory/memory-date'
 
 const DateSchema = Type.Union([
-  Type.Object(
-    {
-      kind: Type.Literal('recurring'),
-      month: Type.Integer({ minimum: 1, maximum: 12, description: '月(1-12)' }),
-      day: Type.Integer({ minimum: 1, maximum: 31, description: '日(1-31)' }),
-    },
-    { additionalProperties: false, description: '每年重复:生日/纪念日' },
-  ),
-  Type.Object(
-    {
-      kind: Type.Literal('fixed'),
-      iso: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '一次性日期 YYYY-MM-DD' }),
-    },
-    { additionalProperties: false, description: '一次性日期' },
-  ),
+  Type.Object({ kind: Type.Literal('recurring'), month: Type.Integer({ minimum: 1, maximum: 12 }), day: Type.Integer({ minimum: 1, maximum: 31 }) }, { additionalProperties: false }),
+  Type.Object({ kind: Type.Literal('fixed'), iso: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }) }, { additionalProperties: false }),
 ])
+const AddNoteParams = Type.Object({
+  text: Type.String({ minLength: 1, maxLength: 20 * 1024 }),
+  title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  category: Type.Optional(Type.String({ maxLength: 100 })),
+  date: Type.Optional(DateSchema),
+}, { additionalProperties: false })
+const SearchParams = Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })) }, { additionalProperties: false })
+const ReadParams = Type.Object({
+  path: Type.String({ pattern: '^(?:MEMORY\\.md|notes/\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-[a-z0-9][a-z0-9-]{0,79}\\.md)$' }),
+  lineStart: Type.Optional(Type.Integer({ minimum: 1 })), lineEnd: Type.Optional(Type.Integer({ minimum: 1 })),
+}, { additionalProperties: false })
+const SaveParams = Type.Object({
+  text: Type.String({ minLength: 1, maxLength: 20 * 1024 }), title: Type.String({ minLength: 1, maxLength: 200 }),
+  category: Type.Optional(Type.String({ maxLength: 100 })), date: Type.Optional(DateSchema),
+}, { additionalProperties: false })
 
-const SaveParams = Type.Object(
-  {
-    text: Type.String({ minLength: 1, maxLength: 2000, description: '用户要记住的原话,如"我妈生日是三月五号"' }),
-    title: Type.String({ minLength: 1, maxLength: 40, description: '提炼的短标题,如"妈妈生日"(提醒时显示)' }),
-    category: Type.Optional(Type.String({ maxLength: 20, description: '类别:生日/纪念日/偏好/事实' })),
-    date: Type.Optional(DateSchema),
-  },
-  { additionalProperties: false },
-)
-
-export function createSaveMemoryTool(store: MemoryStore): AgentTool<typeof SaveParams> {
-  return {
-    name: 'save_memory',
-    label: '记事',
-    description:
-      '把用户说的重要事情记到本地记事本(生日、纪念日、偏好等)。含日期的事记得提取日期:生日/周年用 recurring(月+日),一次性安排用 fixed。保存后告诉用户"已记住:××"。',
-    parameters: SaveParams,
-    executionMode: 'sequential',
-    execute: async (_id, params: Static<typeof SaveParams>) => {
-      const entry = await store.add({
+export function createAddMemoryNoteTool(store: GlobalMemoryStore, source: MemorySource): AgentTool<typeof AddNoteParams> {
+  return { name: 'memory.add_note', label: '添加记忆', description: '把一条权威原始记忆追加到全局记忆库。传 text，可选 title/category/date；文件名由应用生成。更新或忘记旧信息时也追加说明，不改写旧条目。', parameters: AddNoteParams, executionMode: 'sequential',
+    execute: async (_id, params: Static<typeof AddNoteParams>) => {
+      if (params.date !== undefined) assertValidMemoryDate(params.date)
+      const entry = await store.addGeneratedNote({
         text: params.text,
-        title: params.title,
-        category: params.category ?? '事实',
-        ...(params.date ? { date: params.date as MemoryDate } : {}),
-      })
-      return {
-        content: [
-          { type: 'text', text: `已保存记事:${entry.title}(类别:${entry.category})。请在回复里向用户口头确认"已记住"。` },
-        ],
-        details: { id: entry.id },
-      }
-    },
-  }
+        ...(params.title !== undefined ? { title: params.title } : {}),
+        ...(params.category !== undefined ? { category: params.category } : {}),
+        ...(params.date !== undefined ? { date: params.date as MemoryDate } : {}),
+      }, source)
+      return { content: [{ type: 'text', text: `已追加记忆:${entry.id}` }], details: { id: entry.id } }
+    } }
 }
 
-const SearchParams = Type.Object(
-  {
-    query: Type.String({ minLength: 1, maxLength: 200, description: '要查的关键词,如"妈妈生日"' }),
-  },
-  { additionalProperties: false },
-)
-
-export function createSearchMemoriesTool(store: MemoryStore): AgentTool<typeof SearchParams> {
-  return {
-    name: 'search_memories',
-    label: '查记事',
-    description: '按关键词查本地记事本。用户问"我妈生日是什么时候"这类事之前先查一查。',
-    parameters: SearchParams,
-    executionMode: 'sequential',
+export function createMemorySearchTool(store: GlobalMemoryStore, name = 'memory.search'): AgentTool<typeof SearchParams> {
+  return { name, label: '检索记忆', description: '按一个或多个关键词检索全局记忆，返回带逻辑路径和行号的上下文窗口。', parameters: SearchParams, executionMode: 'sequential',
     execute: async (_id, params: Static<typeof SearchParams>) => {
-      const found = await store.search(params.query)
-      if (found.length === 0) {
-        return {
-          content: [{ type: 'text', text: '记事本里没有相关记录。' }],
-          details: { count: 0 },
-        }
-      }
-      const lines = found.map((m) => {
-        const date = m.date
-          ? m.date.kind === 'recurring'
-            ? `每年 ${m.date.month} 月 ${m.date.day} 日`
-            : m.date.iso
-          : '无日期'
-        return `· ${m.title}(${m.category},${date}):${m.text}`
-      })
-      return {
-        content: [{ type: 'text', text: `找到 ${found.length} 条:\n${lines.join('\n')}` }],
-        details: { count: found.length },
-      }
-    },
-  }
+      const hits = await store.search(params.query, params.maxResults)
+      const text = hits.length === 0 ? '记忆库里没有相关记录。' : hits.map((hit) => `${hit.path}:${hit.lineStart}-${hit.lineEnd}\n${hit.excerpt}`).join('\n\n')
+      return { content: [{ type: 'text', text }], details: { count: hits.length } }
+    } }
 }
 
-export function createMemoryTools(store: MemoryStore): AgentTool[] {
-  return [createSaveMemoryTool(store), createSearchMemoriesTool(store)]
+export function createMemoryReadTool(store: GlobalMemoryStore): AgentTool<typeof ReadParams> {
+  return { name: 'memory.read', label: '读取记忆', description: '按逻辑路径和行号读取 MEMORY.md 或已登记的原始记忆条目。', parameters: ReadParams, executionMode: 'sequential',
+    execute: async (_id, params: Static<typeof ReadParams>) => {
+      const result = await store.read(params.path, params.lineStart, params.lineEnd)
+      return { content: [{ type: 'text', text: `${result.path}:${result.lineStart}-${result.lineEnd}${result.truncated ? '（已截断）' : ''}\n${result.content}` }], details: result }
+    } }
+}
+
+export function createSaveMemoryTool(store: GlobalMemoryStore, source: MemorySource): AgentTool<typeof SaveParams> {
+  return { name: 'save_memory', label: '记事', description: '兼容旧守则：保存生活记事；含日期时提取日期。', parameters: SaveParams, executionMode: 'sequential',
+    execute: async (_id, params: Static<typeof SaveParams>) => {
+      if (params.date !== undefined) assertValidMemoryDate(params.date)
+      const entry = await store.addGeneratedNote({ text: params.text, title: params.title, category: params.category ?? '事实', ...(params.date ? { date: params.date as MemoryDate } : {}) }, source)
+      return { content: [{ type: 'text', text: `已保存记事:${entry.title ?? params.title}。请向用户确认“已记住”。` }], details: { id: entry.id } }
+    } }
+}
+
+export function createSearchMemoriesTool(store: GlobalMemoryStore): AgentTool<typeof SearchParams> { return createMemorySearchTool(store, 'search_memories') }
+export function createMemoryTools(store: GlobalMemoryStore, source: MemorySource): AgentTool[] {
+  return [createAddMemoryNoteTool(store, source), createMemorySearchTool(store), createMemoryReadTool(store), createSaveMemoryTool(store, source), createSearchMemoriesTool(store)]
 }

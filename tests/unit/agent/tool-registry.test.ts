@@ -25,10 +25,18 @@ describe('工具白名单(M4-07)', () => {
       'make_directory',
       'read_docx',
       'write_docx',
+      'write_pptx',
       'read_workbook',
       'write_workbook',
       'save_memory',
       'search_memories',
+      'memory.add_note',
+      'memory.search',
+      'memory.read',
+      // read_skill 在名单内,但实例随会话技能快照附加(agent-service 拼 tools),不在 buildTools 输出
+      'read_skill',
+      'search_skills',
+      'install_skill',
       'edit_role_guardrails',
       'spawn_role_agent',
       'wait_agents',
@@ -41,7 +49,7 @@ describe('工具白名单(M4-07)', () => {
       'bash', 'shell', 'exec', 'spawn', 'run_command', 'command',
       'script', 'powershell', 'cmd', 'install', 'npm', 'pip',
     ]
-    for (const name of TOOL_NAMES.filter((name) => name !== 'spawn_role_agent')) {
+    for (const name of TOOL_NAMES.filter((name) => name !== 'spawn_role_agent' && name !== 'install_skill')) {
       for (const bad of forbidden) {
         expect(name.toLowerCase()).not.toContain(bad)
       }
@@ -49,17 +57,30 @@ describe('工具白名单(M4-07)', () => {
   })
 
   it('三类工具白名单严格分离', () => {
+    const managedSkillWrite = {
+      resolve: async () => undefined,
+      approve: async () => {},
+      discard: async () => {},
+      install: async () => {},
+    }
     const deps = {
       policy: {},
       ops: {},
       trash: async () => {},
       memoryTools: () => [fakeTool('save_memory'), fakeTool('search_memories')],
       roleRulesTools: () => [fakeTool('edit_role_guardrails')],
+      marketTools: () => [fakeTool('search_skills'), fakeTool('install_skill')],
+      managedSkillWrite,
+      sessionId: 's1',
     } as unknown as ToolRegistryDeps
     const manager = buildTools(deps, 'manager').map((tool) => tool.name)
     expect(manager).toEqual([
+      'write_file',
       'save_memory',
       'search_memories',
+      'search_skills',
+      'install_skill',
+      // read_skill 不经 buildTools 注册(随技能快照附加,见 skill-tools.test.ts)
       'spawn_role_agent',
       'wait_agents',
       'list_agents',
@@ -71,6 +92,7 @@ describe('工具白名单(M4-07)', () => {
     expect(regular).toContain('read_file')
     expect(regular).toContain('save_memory')
     expect(regular).toContain('edit_role_guardrails')
+    expect(regular).toContain('search_skills')
     expect(regular).not.toContain('spawn_role_agent')
 
     const delegated = buildTools(deps, 'delegated-worker').map((tool) => tool.name)
@@ -78,6 +100,9 @@ describe('工具白名单(M4-07)', () => {
     expect(delegated).toContain('edit_role_guardrails')
     expect(delegated).not.toContain('save_memory')
     expect(delegated).not.toContain('spawn_role_agent')
+    expect(delegated).not.toContain('search_skills')
+    const delegatedWrite = buildTools(deps, 'delegated-worker').find((tool) => tool.name === 'write_file')
+    expect(delegatedWrite?.description).not.toContain('daweige-skill://')
   })
 
   it('协作工具 schema 不接收模型伪造 runId/sessionId,wait 只允许一个 run', () => {

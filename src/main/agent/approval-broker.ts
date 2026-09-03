@@ -5,10 +5,14 @@ import type {
   ApprovalResponse,
   DelegationApprovalRequest,
   FileApprovalRequest,
+  SkillCandidateApprovalRequest,
+  SkillInstallApprovalRequest,
 } from '../../shared/domain/approval'
+import type { SkillMarketCandidate } from '../../shared/domain/skill'
 import type { CommandApprovalRequest, SandboxProfileSnapshot } from '../../shared/domain/command'
 import type { AgentRunId } from '../../shared/domain/manager'
 import type { AgentPushEvent } from '../../shared/ipc/events'
+import { validateApprovalResponseForRequest } from '../../shared/ipc/schemas'
 
 /**
  * 确认 Broker(M4-02)。
@@ -27,7 +31,7 @@ export interface ApprovalInput {
   /** 卡片展示归属;child 传 manager user session,普通会话不传。 */
   surfaceSessionId?: string
   /** 文件/守则类卡片;delegation(0.3.0)由 orchestrator 专用入口发起;command(0.4.0)由 run_command 专用入口发起,均不走本结构。 */
-  kind: Exclude<ApprovalKind, 'delegation' | 'command'>
+  kind: Exclude<ApprovalKind, 'delegation' | 'command' | 'skill-candidate' | 'skill-install'>
   title: string
   description: string
   itemCount: number
@@ -36,6 +40,7 @@ export interface ApprovalInput {
   outsideWorkspace: boolean
   toolCallId?: string
   toolName?: string
+  contentPreview?: string
 }
 
 export interface DelegationApprovalInput {
@@ -66,8 +71,31 @@ export interface CommandApprovalInput {
   toolCallId: string
 }
 
+export interface SkillCandidateApprovalInput {
+  readonly sessionId: string
+  readonly title: string
+  readonly description: string
+  readonly query: string
+  readonly candidates: readonly SkillMarketCandidate[]
+  readonly toolCallId: string
+  readonly signal?: AbortSignal
+}
+
+export interface SkillInstallApprovalInput {
+  readonly sessionId: string
+  readonly title: string
+  readonly description: string
+  readonly candidate: SkillMarketCandidate
+  readonly markdownPreview: string
+  readonly markdownBytes: number
+  readonly previewTruncated: boolean
+  readonly targetLogicalLocation: string
+  readonly toolCallId: string
+  readonly signal?: AbortSignal
+}
+
 export type ApprovalOutcome =
-  | { decision: 'approve' }
+  | { decision: 'approve'; selectedOptionId?: string }
   /** command(0.4.0 C)专用:本会话允许同命令再跑——由工具层 CommandApprovalCache 双登记。 */
   | { decision: 'approve-session' }
   | { decision: 'reject'; note?: string; timedOut?: boolean }
@@ -78,11 +106,18 @@ interface PendingApproval {
   surfaceSessionId?: string
   settle: (outcome: ApprovalOutcome) => void
   timer: ReturnType<typeof setTimeout>
+  abortCleanup?: () => void
 }
 
 export class ApprovalNotFoundError extends Error {
   constructor(approvalId: string) {
     super(`确认请求不存在或已处理:${approvalId}`)
+  }
+}
+
+export class ApprovalResponseMismatchError extends Error {
+  constructor() {
+    super('确认响应与请求不匹配')
   }
 }
 
@@ -116,6 +151,7 @@ export class ApprovalBroker {
       outsideWorkspace: input.outsideWorkspace,
       ...(input.toolCallId !== undefined ? { toolCallId: input.toolCallId } : {}),
       ...(input.toolName !== undefined ? { toolName: input.toolName } : {}),
+      ...(input.contentPreview !== undefined ? { contentPreview: input.contentPreview } : {}),
       createdAt: Date.now(),
     }
 
@@ -159,19 +195,53 @@ export class ApprovalBroker {
     return this.enqueueRequest(request, input.sessionId, input.surfaceSessionId)
   }
 
+  async requestSkillCandidate(input: SkillCandidateApprovalInput): Promise<ApprovalOutcome> {
+    const request: SkillCandidateApprovalRequest = {
+      id: randomUUID(), kind: 'skill-candidate', title: input.title,
+      description: input.description, query: input.query,
+      candidates: input.candidates.map((candidate) => ({ ...candidate })),
+      createdAt: Date.now(), toolCallId: input.toolCallId,
+    }
+    return this.enqueueRequest(request, input.sessionId, undefined, input.signal)
+  }
+
+  async requestSkillInstall(input: SkillInstallApprovalInput): Promise<ApprovalOutcome> {
+    const request: SkillInstallApprovalRequest = {
+      id: randomUUID(), kind: 'skill-install', title: input.title,
+      description: input.description, candidate: { ...input.candidate },
+      markdownPreview: input.markdownPreview, markdownBytes: input.markdownBytes,
+      previewTruncated: input.previewTruncated,
+      targetLogicalLocation: input.targetLogicalLocation,
+      createdAt: Date.now(), toolCallId: input.toolCallId,
+    }
+    return this.enqueueRequest(request, input.sessionId, undefined, input.signal)
+  }
+
   private enqueueRequest(
     request: ApprovalRequest,
     sessionId: string,
     surfaceSessionId?: string,
+    signal?: AbortSignal,
   ): Promise<ApprovalOutcome> {
     const promise = new Promise<ApprovalOutcome>((settle) => {
       const timer = setTimeout(() => {
         // 超时按拒绝收尾,绝不默认放行
+        const pending = this.pending.get(request.id)
         this.pending.delete(request.id)
+        pending?.abortCleanup?.()
         this.emitResolved(sessionId, request.id, 'reject', surfaceSessionId)
         settle({ decision: 'reject', note: '等待确认超时,本次未执行', timedOut: true })
       }, APPROVAL_TIMEOUT_MS)
 
+      const abort = () => {
+        const pending = this.pending.get(request.id)
+        if (!pending) return
+        this.pending.delete(request.id)
+        clearTimeout(timer)
+        this.emitResolved(sessionId, request.id, 'reject', surfaceSessionId)
+        settle({ decision: 'reject', note: '当前回合已停止，本次没有执行' })
+      }
+      signal?.addEventListener('abort', abort, { once: true })
       this.pending.set(request.id, {
         request,
         sessionId,
@@ -181,7 +251,9 @@ export class ApprovalBroker {
           settle(outcome)
         },
         timer,
+        ...(signal ? { abortCleanup: () => signal.removeEventListener('abort', abort) } : {}),
       })
+      if (signal?.aborted) abort()
     })
 
     this.safeEmit({
@@ -199,7 +271,11 @@ export class ApprovalBroker {
     if (!pending) {
       throw new ApprovalNotFoundError(response.approvalId)
     }
+    if (!validateApprovalResponseForRequest(pending.request, response)) {
+      throw new ApprovalResponseMismatchError()
+    }
     this.pending.delete(response.approvalId)
+    pending.abortCleanup?.()
     const settledDecision = response.decision === 'reject' ? 'reject' : 'approve'
     this.emitResolved(
       pending.sessionId,
@@ -221,9 +297,12 @@ export class ApprovalBroker {
       if (
         req.kind !== 'delegation' &&
         req.kind !== 'command' &&
+        req.kind !== 'skill-candidate' &&
+        req.kind !== 'skill-install' &&
         req.toolName &&
         req.kind !== 'delete' &&
         req.kind !== 'role-rules-edit' &&
+        req.contentPreview === undefined &&
         !req.outsideWorkspace
       ) {
         let grants = this.sessionGrants.get(pending.sessionId)
@@ -241,7 +320,9 @@ export class ApprovalBroker {
         return
       }
     }
-    pending.settle({ decision: 'approve' })
+    pending.settle(response.selectedOptionId
+      ? { decision: 'approve', selectedOptionId: response.selectedOptionId }
+      : { decision: 'approve' })
   }
 
   /** 会话 abort/删除时:该会话的全部待确认按拒绝收尾。 */
@@ -263,6 +344,7 @@ export class ApprovalBroker {
       if (pending.request.kind === 'delegation' && pending.request.runId === runId) {
         this.pending.delete(id)
         clearTimeout(pending.timer)
+        pending.abortCleanup?.()
         this.emitResolved(pending.sessionId, id, 'reject', pending.surfaceSessionId)
         pending.settle({ decision: 'reject', note: reason })
       }
@@ -274,6 +356,7 @@ export class ApprovalBroker {
       if (pending.sessionId === sessionId) {
         this.pending.delete(id)
         clearTimeout(pending.timer)
+        pending.abortCleanup?.()
         this.emitResolved(sessionId, id, 'reject', pending.surfaceSessionId)
         pending.settle({ decision: 'reject', note: reason })
       }
@@ -285,6 +368,7 @@ export class ApprovalBroker {
     for (const [id, pending] of this.pending) {
       this.pending.delete(id)
       clearTimeout(pending.timer)
+      pending.abortCleanup?.()
       this.emitResolved(pending.sessionId, id, 'reject', pending.surfaceSessionId)
       pending.settle({ decision: 'reject', note: reason })
     }

@@ -1,7 +1,7 @@
 /**
  * Provider(模型厂商)领域模型。
  *
- * ProviderId 与 pi 0.84.2 内置 provider id 保持一致:
+ * ProviderId 与 pi 0.84.4 内置 provider id 保持一致:
  * - kimi-coding  (KIMI_API_KEY, anthropic-messages)
  * - zai          (ZAI_API_KEY, openai-completions, 国际)
  * - zai-coding-cn (ZAI_CODING_CN_API_KEY, openai-completions, 国内)

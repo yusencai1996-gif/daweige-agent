@@ -8,7 +8,7 @@ import { PROVIDER_CATALOG, defaultModelFor, KNOWN_MODEL_WINDOWS } from '../agent
  * 模型列表服务(A-10):填完 key 后在线拉取厂商可选模型,
  * 叠加本地规格表(models 接口普遍不返回上下文长度,规格离线配)。
  *
- * 端点(来源 pi 0.84.2 内置 provider 的 baseUrl,OpenAI 兼容 GET {base}/models):
+ * 端点(来源 pi 0.84.4 内置 provider 的 baseUrl,OpenAI 兼容 GET {base}/models):
  * - zai:           https://api.z.ai/api/coding/paas/v4/models
  * - zai-coding-cn: https://open.bigmodel.cn/api/coding/paas/v4/models
  * - deepseek:      https://api.deepseek.com/models

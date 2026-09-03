@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { MemoryEntry, MemoryDate } from '../../shared/domain/memory'
+import type { MemoryEntry } from '../../shared/domain/memory'
+import { assertValidMemoryDate, isValidMemoryDate } from './memory-date'
 
 /**
  * 生活记事存储(M5-01)。
@@ -11,7 +12,7 @@ import type { MemoryEntry, MemoryDate } from '../../shared/domain/memory'
 
 export class MemoryStore {
   private cache: MemoryEntry[] | undefined
-  /** 写操作串行队列(独立复审阻断项:并发 add/remove 共用固定 .tmp 会互相覆盖/丢数据)。 */
+  /** 写操作串行队列(codex 复审阻断项:并发 add/remove 共用固定 .tmp 会互相覆盖/丢数据)。 */
   private writeChain: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly filePath: string) {}
@@ -28,7 +29,8 @@ export class MemoryStore {
     let raw: string
     try {
       raw = await fs.readFile(this.filePath, 'utf-8')
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       this.cache = []
       return this.cache
     }
@@ -50,6 +52,7 @@ export class MemoryStore {
 
   async add(input: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryEntry> {
     return this.enqueue(async () => {
+      if (input.date !== undefined) assertValidMemoryDate(input.date)
       const records = await this.load()
       const entry: MemoryEntry = {
         ...input,
@@ -110,16 +113,4 @@ function isValidMemory(value: unknown): value is MemoryEntry {
   if (typeof v['createdAt'] !== 'number') return false
   if (v['date'] !== undefined && !isValidMemoryDate(v['date'])) return false
   return true
-}
-
-function isValidMemoryDate(value: unknown): value is MemoryDate {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Record<string, unknown>
-  if (v['kind'] === 'recurring') {
-    return typeof v['month'] === 'number' && typeof v['day'] === 'number'
-  }
-  if (v['kind'] === 'fixed') {
-    return typeof v['iso'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v['iso'])
-  }
-  return false
 }

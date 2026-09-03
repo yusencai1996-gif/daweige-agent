@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { RoleProfile } from '../../shared/domain'
 import { isValidRoleId } from './role-id'
+import { seedDefaultSkillIntoHome } from '../skills/default-skill-seeder'
 
 /**
  * 角色家目录文件层(PLAN §2.4/§2.5)。
@@ -79,8 +80,10 @@ export async function stageRoleHome(
   await mkdir(join(stagingDir, 'resources'), { recursive: true })
   await mkdir(join(stagingDir, 'extensions', 'skills'), { recursive: true })
   await mkdir(join(stagingDir, 'extensions', 'mcp'), { recursive: true })
+  await mkdir(join(stagingDir, 'memory'), { recursive: true })
   await atomicWriteJson(join(stagingDir, 'profile.json'), profile)
   await atomicWriteText(join(stagingDir, 'guardrails.md'), guardrails)
+  await seedDefaultSkillIntoHome(stagingDir, profile.templateId)
   return stagingDir
 }
 

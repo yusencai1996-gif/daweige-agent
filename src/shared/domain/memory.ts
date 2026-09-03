@@ -34,3 +34,47 @@ export interface Reminder {
   /** 距今天数:0=今天,3=3 天后。 */
   readonly daysUntil: number
 }
+
+export type MemorySource =
+  | {
+      readonly kind: 'conversation'
+      readonly roleId: string | null
+      readonly roleDisplayName: string
+    }
+  | {
+      readonly kind: 'life-note-migration'
+      readonly legacyId: string
+    }
+
+export interface MemoryNoteSummary {
+  readonly id: string
+  readonly content: string
+  readonly createdAt: number
+  readonly source: MemorySource
+  readonly title?: string
+  readonly category?: string
+  readonly date?: MemoryDate
+}
+
+export type MemoryMergeState = 'clean' | 'pending' | 'running' | 'failed'
+
+export interface MemoryListPageRequest {
+  readonly cursor?: string
+  readonly limit?: number
+}
+
+export interface MemoryListPage {
+  readonly revision: number
+  readonly mergeState: MemoryMergeState
+  readonly entries: readonly MemoryNoteSummary[]
+  readonly nextCursor?: string
+  readonly total: number
+  readonly reset: boolean
+}
+
+/** @deprecated 主进程存储层在分页实现批完成前使用的内部兼容快照。 */
+export interface MemoryListSnapshot {
+  readonly revision: number
+  readonly mergeState: MemoryMergeState
+  readonly entries: readonly MemoryNoteSummary[]
+}

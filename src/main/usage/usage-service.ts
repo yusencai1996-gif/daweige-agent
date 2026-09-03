@@ -1,4 +1,5 @@
 import type { AgentMessage, CompactionEntry } from '@earendil-works/pi-agent-core'
+import type { Api, Model, Usage } from '@earendil-works/pi-ai'
 import type { UsageDashboard } from '../../shared/domain/usage'
 import type { AgentRunSummary } from '../../shared/domain/manager'
 import type { AgentPushEvent } from '../../shared/ipc/events'
@@ -7,6 +8,7 @@ import {
   currentIanaTimeZone,
   parseAssistantUsage,
   parseCompactionUsage,
+  parseUsageBlock,
   type ParsedUsageEvent,
 } from './usage-parser'
 import type { UsageEntryRow } from '../storage/session-repository'
@@ -32,6 +34,14 @@ export interface UsageRecorder {
     sessionId: string
     entry: CompactionEntry
   }): void
+  recordAuxiliaryUsage?(input: {
+    sourceId: string
+    sessionId: string
+    model: Model<Api>
+    usage: Usage
+    occurredAt: number
+    stopReason: 'memory-consolidation'
+  }): Promise<void>
 }
 
 export interface UsageServiceDeps {
@@ -106,6 +116,37 @@ export class UsageService implements UsageRecorder {
       .catch((error) => this.deps.logError('compaction usage live 记录失败(不影响聊天)', error))
   }
 
+  async recordAuxiliaryUsage(input: {
+    sourceId: string
+    sessionId: string
+    model: Model<Api>
+    usage: Usage
+    occurredAt: number
+    stopReason: 'memory-consolidation'
+  }): Promise<void> {
+    let event: ParsedUsageEvent | undefined
+    try {
+      event = parseUsageBlock({
+        sourceEntryId: idempotencyKey(input.sessionId, input.sourceId),
+        sessionId: input.sessionId,
+        usage: input.usage,
+        provider: String((input.model as { provider?: unknown }).provider ?? ''),
+        modelId: input.model.id,
+        responseModelId: null,
+        occurredAtMs: input.occurredAt,
+        timeZone: currentIanaTimeZone(),
+        stopReason: input.stopReason,
+      })
+    } catch (error) {
+      this.deps.logError('auxiliary usage 解析异常（已跳过）', error)
+      return
+    }
+    if (!event) return
+    await this.store.insertEvents([event], 'live').then((inserted) => {
+      if (inserted > 0) this.notifyUpdated()
+    })
+  }
+
   private notifyUpdated(): void {
     this.deps.emitEvent({ type: 'usage_updated', generatedAt: Date.now() })
   }
@@ -127,11 +168,11 @@ export class UsageService implements UsageRecorder {
         const inserted = await this.store.insertEvents(batch, 'backfill')
         batch.length = 0
         if (inserted > 0) this.notifyUpdated()
-        // 让出事件循环:批量事务不长时间占住主线程(独立复审 B-01)
+        // 让出事件循环:批量事务不长时间占住主线程(codex 复审 B-01)
         await new Promise((resolve) => setImmediate(resolve))
       }
       for (const row of this.deps.iterateUsageEntries()) {
-        // 行级隔离(独立复审 B-02):一条坏数据只丢自己,不阻断其后所有历史回填
+        // 行级隔离(codex 复审 B-02):一条坏数据只丢自己,不阻断其后所有历史回填
         try {
           if (row.type === 'message') {
             const message = row.message as { role?: string; timestamp?: number }

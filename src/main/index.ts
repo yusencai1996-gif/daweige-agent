@@ -1,6 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
-import { realpath } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import { createMainWindow } from './window'
 import { installCspHeader } from './security/csp'
 import { redactCommonSecrets } from './security/redaction'
@@ -37,7 +37,7 @@ import {
 } from '../shared/domain/manager'
 import { ProviderRegistry } from './agent/provider-registry'
 import { ConnectivityService } from './agent/connectivity-service'
-import { AgentService } from './agent/agent-service'
+import { AgentService, type AgentModels } from './agent/agent-service'
 import { ApprovalBroker } from './agent/approval-broker'
 import { createApprovalGate } from './agent/approval-gate'
 import { buildTools } from './agent/tool-registry'
@@ -47,6 +47,9 @@ import type { RolePromptLayer } from './agent/prompt-composer'
 import { PathPolicy, StrictDelegationPathPolicy } from './files/path-policy'
 import { FileOps } from './files/file-ops'
 import { MemoryStore } from './memory/memory-store'
+import { GlobalMemoryStore } from './memory/global-memory-store'
+import { MemoryConsolidationService } from './memory/memory-consolidation-service'
+import { createMemoryPromptProvider } from './memory/memory-prompt'
 import { ReminderService } from './memory/reminder-service'
 import { UsageStore } from './usage/usage-store'
 import { UsageService } from './usage/usage-service'
@@ -64,6 +67,7 @@ import { resolveRoleModel } from '../shared/domain/model-selection'
 import { registerApprovalHandlers } from './ipc/approval-handlers'
 import { registerWindowHandlers } from './ipc/window-handlers'
 import { registerMemoryHandlers } from './ipc/memory-handlers'
+import { registerSkillHandlers } from './ipc/skill-handlers'
 import { registerUpdateHandlers } from './ipc/update-handlers'
 import { registerUsageHandlers } from './ipc/usage-handlers'
 import { registerAgentRunHandlers } from './ipc/agent-run-handlers'
@@ -86,6 +90,17 @@ import {
 import { currentIanaTimeZone, localDateFor } from './usage/usage-parser'
 import { UpdateService } from './update/update-service'
 import { WorkspaceAuthorization } from './ipc/workspace-auth'
+import { SkillCatalogService } from './skills/skill-catalog-service'
+import { seedDefaultGlobalSkills, seedExistingDefaultSkills } from './skills/default-skill-migration'
+import { SkillRegistryHttpClient } from './skills/market/skill-registry-http-client'
+import { CuratedCatalogRegistry } from './skills/market/curated-catalog'
+import { GitHubRegistry } from './skills/market/github-registry'
+import { SkillRegistryService } from './skills/market/registry-service'
+import { SkillInstallationStore } from './skills/market/skill-installation-store'
+import { SkillInstallTokenStore } from './skills/market/skill-install-token-store'
+import { createSkillMarketTools } from './skills/market/skill-market-tools'
+import { FauxSkillRegistry } from './skills/market/faux-registry'
+import { DefaultManagedSkillWriteResolver } from './skills/managed-skill-write'
 
 /**
  * 主进程入口。
@@ -121,12 +136,17 @@ let sessionRepository: SessionRepository | undefined
 let roleRepositoryRef: RoleRepository | undefined
 let approvalBrokerRef: ApprovalBroker | undefined
 let usageServiceRef: UsageService | undefined
+let memoryConsolidationRef: MemoryConsolidationService | undefined
 let managerOrchestratorRef: ManagerOrchestrator | undefined
 let agentServiceRef: AgentService | undefined
 let quitting = false
 
 app.whenReady().then(async () => {
   const userData = app.getPath('userData')
+  // 开发/E2E 双门：打包版永远忽略环境变量；独立 userData 防测试污染真实数据。
+  const e2eScenario = !app.isPackaged && process.env.DAWEIGE_USER_DATA
+    ? process.env.DAWEIGE_E2E_SCENARIO
+    : undefined
   const credentialStore = new CredentialStore({
     safeStorage: createElectronSafeStorage(),
     secretsDir: join(userData, 'secrets'),
@@ -152,6 +172,14 @@ app.whenReady().then(async () => {
     userData,
     managerWorkspaceResolver,
   )
+  const skillCatalog = new SkillCatalogService(userData, async () => {
+    if (!roleRepository) return []
+    return (await roleRepository.listRoleRows()).map((row) => ({
+      roleId: row.id,
+      roleDisplayName: row.displayName,
+      templateId: row.templateId,
+    }))
+  })
   const providerRegistry = new ProviderRegistry(credentialStore)
   const connectivityService = new ConnectivityService(providerRegistry, credentialStore)
 
@@ -187,13 +215,22 @@ app.whenReady().then(async () => {
   }
   usageServiceRef = usageService
   const approvalBroker = new ApprovalBroker(emitAgentEvent)
+  const skillRegistryHttp = new SkillRegistryHttpClient()
+  const skillRegistry = new SkillRegistryService(e2eScenario?.startsWith('skill-market')
+    ? [new FauxSkillRegistry()]
+    : [new CuratedCatalogRegistry(skillRegistryHttp), new GitHubRegistry(skillRegistryHttp)])
+  const skillInstallations = new SkillInstallationStore(skillCatalog.globalSkillsRoot())
+  const managedSkillWrite = new DefaultManagedSkillWriteResolver(skillInstallations, skillCatalog)
+  const skillInstallTokens = new SkillInstallTokenStore(
+    e2eScenario?.startsWith('skill-market')
+      ? () => 'inst_e2e_skill_market_once_0001'
+      : undefined,
+  )
+  await skillInstallations.cleanupStale()
   const updateService = new UpdateService({ emitEvent: emitAgentEvent })
   approvalBrokerRef = approvalBroker
   const workspaceAuth = new WorkspaceAuthorization()
   // 双门 E2E 场景注入(0.4.0 C):非打包 + 独立 userData 才认(packaged 一律忽略,不进生产装配)
-  const e2eScenario = !app.isPackaged && process.env.DAWEIGE_USER_DATA
-    ? process.env.DAWEIGE_E2E_SCENARIO
-    : undefined
   // 0.4.0 C3:命令能力装配(capability 钥匙库+精确缓存+惰性沙箱执行器)
   const capabilityStore = new CapabilityStore(join(userData, 'sandbox', 'capabilities-v1.json'))
   const commandApprovalCache = new CommandApprovalCache()
@@ -231,7 +268,8 @@ app.whenReady().then(async () => {
     },
   }
   const memoryStore = new MemoryStore(join(userData, 'data', 'memories.json'))
-  const reminderService = new ReminderService(() => memoryStore.load())
+  const globalMemoryStore = new GlobalMemoryStore(join(userData, 'daweige', 'memory'), emitAgentEvent)
+  const reminderService = new ReminderService(() => globalMemoryStore.listReminderRecords().catch(() => []))
   let managerOrchestrator: ManagerOrchestrator | undefined
   // 工作区租约门(0.4.0 D,codex 阶段复审阻断整改):普通/manager 会话的写与命令不得碰被占根
   const workspaceLeaseService = roleRepository ? new WorkspaceLeaseService(roleRepository) : undefined
@@ -239,6 +277,97 @@ app.whenReady().then(async () => {
   // 只 fake 模型流与 OS spawn;agent loop/事件流/Policy/审批/工具编排全真。
   // collab 场景的工具参数由测试经 env 传入(seed 时定死的 runId/角色/目录)。
   const fauxModelsForScenario = (() => {
+    const authoredMarkdown = [
+      '---',
+      'name: reusable-cleanup',
+      'description: 整理重复文件并核对结果的同类任务。',
+      '---',
+      '',
+      '# 可复用整理流程',
+      '',
+      '## 第 0 步',
+      '',
+      '- 确认目标文件夹和保留规则。',
+      '',
+      '## 步骤',
+      '',
+      '1. 按名称和大小找出重复项。',
+      '2. 列出拟保留和拟移除清单。',
+      '3. 核对数量后交付。',
+      '',
+      '## 交活自检清单',
+      '',
+      '- [ ] 数量前后一致',
+      '- [ ] 没有碰非目标文件',
+      '',
+      '## 不要做',
+      '',
+      '- 不猜测用户的保留偏好。',
+    ].join('\n')
+    if (e2eScenario === 'skill-authoring-happy') {
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([fauxText('整理已经完成并核对无误。这个做法以后还会复用吗？要的话我可以把它整理成技能，下次遇到类似活直接照着做。')]),
+        fauxAssistantMessage([fauxToolCall('read_skill', { name: 'skill-creator' })]),
+        fauxAssistantMessage([fauxToolCall('write_file', {
+          path: 'daweige-skill://global/reusable-cleanup/SKILL.md', content: authoredMarkdown,
+        })]),
+        fauxAssistantMessage([fauxText('技能已经写好；新建对话后可用。')]),
+        fauxAssistantMessage([fauxToolCall('read_skill', { name: 'reusable-cleanup' })]),
+        fauxAssistantMessage([fauxText('新会话已成功读取 reusable-cleanup。')]),
+      ])
+      return faux
+    }
+    if (e2eScenario === 'skill-authoring-ordinary') {
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([fauxText('北京今天适合带伞。')]),
+        fauxAssistantMessage([fauxText('已把这句话翻译好了。')]),
+        fauxAssistantMessage([fauxText('你好，很高兴见到你。')]),
+      ])
+      return faux
+    }
+    if (e2eScenario === 'skill-authoring-direct') {
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('read_skill', { name: 'skill-creator' })]),
+        fauxAssistantMessage([fauxToolCall('write_file', {
+          path: 'daweige-skill://global/reusable-cleanup/SKILL.md', content: authoredMarkdown,
+        })]),
+        fauxAssistantMessage([fauxText('已按指南产出技能，等你确认写入后新会话可用。')]),
+      ])
+      return faux
+    }
+    if (e2eScenario === 'skill-market-happy' || e2eScenario === 'skill-market-script') {
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([
+          fauxText('我先搜索几个合适的纯文字技能，请你亲自选择。'),
+          fauxToolCall('search_skills', { query: 'meeting notes', limit: 3 }),
+        ]),
+        fauxAssistantMessage([
+          fauxToolCall('install_skill', { installToken: 'inst_e2e_skill_market_once_0001' }),
+        ]),
+        fauxAssistantMessage([fauxText(e2eScenario === 'skill-market-happy'
+          ? '安装流程已经结束；请新建对话后使用这个技能。'
+          : '这个候选依赖脚本，因此没有安装。')]),
+        ...(e2eScenario === 'skill-market-happy' ? [
+          fauxAssistantMessage([fauxToolCall('read_skill', { name: 'faux-second' })]),
+          fauxAssistantMessage([fauxText('旧会话按冻结快照没有这个技能。')]),
+          fauxAssistantMessage([fauxToolCall('read_skill', { name: 'faux-second' })]),
+          fauxAssistantMessage([fauxText('新会话已经成功读取 faux-second 技能。')]),
+        ] : []),
+      ])
+      return faux
+    }
+    if (e2eScenario === 'skill-market-offline') {
+      const faux = fauxProvider({ tokensPerSecond: 10000 })
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('search_skills', { query: 'offline', limit: 3 })]),
+        fauxAssistantMessage([fauxText('现在连不上技能平台，聊天仍可继续。')]),
+      ])
+      return faux
+    }
     if (e2eScenario === 'command-happy') {
       const faux = fauxProvider({ tokensPerSecond: 10000 })
       faux.setResponses([
@@ -306,8 +435,7 @@ app.whenReady().then(async () => {
         }
       })()
     : undefined
-  const agentService = new AgentService({
-    models: commandFauxModels ?? {
+  const configuredAgentModels: AgentModels = commandFauxModels ?? {
       getModel: (providerId, modelId) =>
         providerRegistry.getModel(
           providerId as Parameters<typeof providerRegistry.getModel>[0],
@@ -317,7 +445,25 @@ app.whenReady().then(async () => {
         providerRegistry.models.streamSimple(model, context, options),
       completeSimple: (model, context, options) =>
         providerRegistry.models.completeSimple(model, context, options),
-    },
+    }
+  const usageRecorder = usageService
+    ? {
+        recordAssistantMessage: (input: Parameters<UsageService['recordAssistantMessage']>[0]) => usageService?.recordAssistantMessage(input),
+        recordCompactionEntry: (input: Parameters<UsageService['recordCompactionEntry']>[0]) => usageService?.recordCompactionEntry(input),
+        recordAuxiliaryUsage: (input: Parameters<UsageService['recordAuxiliaryUsage']>[0]) => usageService!.recordAuxiliaryUsage(input),
+      }
+    : undefined
+  const memoryConsolidation = new MemoryConsolidationService(globalMemoryStore, {
+    models: configuredAgentModels,
+    ...(usageRecorder ? { usageRecorder } : {}),
+    logError: (message, error) => console.error(
+      `[memory] ${message}:`,
+      redactCommonSecrets(error instanceof Error ? error.message : String(error)),
+    ),
+  })
+  memoryConsolidationRef = memoryConsolidation
+  const agentService = new AgentService({
+    models: configuredAgentModels,
     sessionService,
     emitEvent: emitAgentEvent,
     toolchain: async ({ sessionId, workspacePath }) => {
@@ -327,6 +473,11 @@ app.whenReady().then(async () => {
       const row = binding && roleRepository
         ? await roleRepository.getRoleRow(binding.roleId)
         : undefined
+      const memorySource = {
+        kind: 'conversation' as const,
+        roleId: binding?.roleId ?? null,
+        roleDisplayName: row?.displayName ?? '大微阁',
+      }
 
       /** 0.4.0 C3:按会话构造 run_command 工具(写根 real 快照+capability 钥匙)。 */
       const makeRunCommandToolFor = async (
@@ -396,12 +547,25 @@ app.whenReady().then(async () => {
               policy,
               ops,
               trash: (p) => shell.trashItem(p),
-              memoryTools: () => createMemoryTools(memoryStore),
+              memoryTools: () => createMemoryTools(globalMemoryStore, memorySource),
+              marketTools: () => createSkillMarketTools({
+                sessionId, registry: skillRegistry, broker: approvalBroker,
+                tokens: skillInstallTokens, installations: skillInstallations, catalog: skillCatalog,
+              }),
+              managedSkillWrite,
+              sessionId,
               managerTools: () => managerOrchestrator?.toolsForSession(sessionId) ?? [],
               ...(runCmd ? { runCommandTool: () => runCmd } : {}),
             },
             'manager',
           ),
+          beforeToolCall: createApprovalGate({
+            broker: approvalBroker,
+            sessionId,
+            policy,
+            managedSkillWrite,
+            assertNotLeased: (paths) => workspaceLeaseService!.assertNotLeased(paths),
+          }),
         }
       }
 
@@ -443,7 +607,15 @@ app.whenReady().then(async () => {
             policy,
             ops,
             trash: (p) => shell.trashItem(p),
-            memoryTools: () => createMemoryTools(memoryStore),
+            memoryTools: () => createMemoryTools(globalMemoryStore, memorySource),
+            ...(!delegatedRun ? {
+              marketTools: () => createSkillMarketTools({
+                sessionId, registry: skillRegistry, broker: approvalBroker,
+                tokens: skillInstallTokens, installations: skillInstallations, catalog: skillCatalog,
+              }),
+              managedSkillWrite,
+              sessionId,
+            } : {}),
             roleRulesTools: () =>
               roleRepository && roleService
                 ? [createEditRoleGuardrailsTool({ sessionId, roleRepository, roleService })]
@@ -470,6 +642,7 @@ app.whenReady().then(async () => {
                 return row?.displayName
               }
             : undefined,
+          ...(!delegatedRun ? { managedSkillWrite } : {}),
         }),
       }
     },
@@ -501,6 +674,18 @@ app.whenReady().then(async () => {
           }
         }
       : undefined,
+    skillContext: async (sessionId) => {
+      if (!roleRepository) return skillCatalog.sessionContext()
+      const binding = await roleRepository.getBinding(sessionId)
+      if (!binding) return skillCatalog.sessionContext()
+      const row = await roleRepository.getRoleRow(binding.roleId)
+      if (!row) return skillCatalog.sessionContext()
+      return skillCatalog.sessionContext({
+        roleId: row.id,
+        roleDisplayName: row.displayName,
+        templateId: row.templateId,
+      })
+    },
     orchestrationPrompt: roleRepository
       ? async (sessionId) => {
           if (!roleRepository) return {}
@@ -537,35 +722,21 @@ app.whenReady().then(async () => {
           return {}
         }
       : undefined,
-    contextNotes: async () => {
-      // 隐私边界(复审 B-05):每次对话只告诉模型"记了哪些事"(标题+日期),
-      // 不带正文;需要细节时由模型调用 search_memories 按问题检索命中条目。
-      const records = await memoryStore.load()
-      return records.map((r) => {
-        const date =
-          r.date?.kind === 'recurring'
-            ? `每年${r.date.month}月${r.date.day}日`
-            : r.date?.kind === 'fixed'
-              ? r.date.iso
-              : ''
-        return `${r.title}(${r.category}${date ? `,${date}` : ''})`
-      })
-    },
+    memoryPrompt: createMemoryPromptProvider(globalMemoryStore, (message) => console.warn(message)),
+    memoryConsolidation,
     thinkingLevel: () => settingsStore.current()?.thinkingLevel,
     // 0.4.0 A(A-14):manager 会话 effective cwd 覆盖(迁移后旧会话立即指向新工作区)
     managerCwdOverride: (sessionId) => sessionService.managerCwdOverride(sessionId),
     // 转发对象而非直传 usageService:断开两者初始化的类型循环(闭包运行时求值);
     // 统计降级(usageService=undefined)时跳过记录
-    usageRecorder: usageService
-      ? {
-          recordAssistantMessage: (input) => usageService?.recordAssistantMessage(input),
-          recordCompactionEntry: (input) => usageService?.recordCompactionEntry(input),
-        }
-      : undefined,
+    usageRecorder,
   })
   agentServiceRef = agentService
 
   await Promise.all([credentialStore.init(), settingsStore.load(), sessionRepository.init()])
+  await globalMemoryStore.initialize(memoryStore).catch((err) => {
+    console.error('[memory] 全局记忆初始化失败,本次关闭记忆功能:', redactCommonSecrets(err instanceof Error ? err.message : String(err)))
+  })
 
   // 0.2.0 启动迁移(PLAN §4.1):会话库初始化后、IPC/窗口前;
   // 失败不拦启动(角色降级为空,会话照旧可开);migrationError 经 bootstrap 告知用户(专审整改)
@@ -574,6 +745,15 @@ app.whenReady().then(async () => {
   let agentRunQuery: AgentRunQueryService | undefined
   let managerCleanup: ManagerCleanupService | undefined
   let e2eAwaitingRunIds: string[] = []
+  // 全局默认技能不依赖角色库；必须先补齐，再进行任何角色默认技能迁移。
+  try {
+    await seedDefaultGlobalSkills(userData)
+  } catch (err) {
+    console.error(
+      '[skills] 全局默认技能补齐失败,不影响聊天与用户技能:',
+      redactCommonSecrets(err instanceof Error ? err.message : String(err)),
+    )
+  }
   if (roleRepository && roleService) {
     try {
       const migration = new RoleMigration(userData, roleRepository, sessionRepository)
@@ -591,6 +771,30 @@ app.whenReady().then(async () => {
       sessionService.deactivateRoles()
     }
     if (roleService) {
+      try {
+        await Promise.all((await roleRepository.listRoleRows()).map((row) =>
+          mkdir(join(userData, 'daweige', 'agents', row.id, 'memory'), { recursive: true }),
+        ))
+      } catch (err) {
+        console.error(
+          '[memory] 角色记忆预留目录补齐失败,不影响全局记忆:',
+          redactCommonSecrets(err instanceof Error ? err.message : String(err)),
+        )
+      }
+      try {
+        await seedExistingDefaultSkills(
+          userData,
+          (await roleRepository.listRoleRows()).map((row) => ({
+            id: row.id,
+            templateId: row.templateId as import('../shared/domain/role').RoleTemplateId,
+          })),
+        )
+      } catch (err) {
+        console.error(
+          '[skills] 既有角色默认技能补齐失败,不影响聊天与用户技能:',
+          redactCommonSecrets(err instanceof Error ? err.message : String(err)),
+        )
+      }
       agentRunQuery = new AgentRunQueryService(
         roleRepository,
         sessionService,
@@ -774,7 +978,8 @@ app.whenReady().then(async () => {
   })
   registerApprovalHandlers(approvalBroker)
   registerWindowHandlers()
-  registerMemoryHandlers(memoryStore)
+  registerSkillHandlers(skillCatalog)
+  registerMemoryHandlers(globalMemoryStore)
   registerUpdateHandlers(updateService)
   if (usageService) {
     registerUsageHandlers(usageService)
@@ -809,6 +1014,7 @@ app.on('before-quit', (event) => {
   const settle = (async () => {
     await managerOrchestratorRef?.drain()
     await agentServiceRef?.drain()
+    await memoryConsolidationRef?.drain()
     await Promise.allSettled([
       sessionRepository?.close(),
       usageServiceRef?.drainAndClose(),

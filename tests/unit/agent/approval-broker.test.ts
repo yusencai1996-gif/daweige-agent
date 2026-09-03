@@ -21,7 +21,9 @@ function lastApprovalRequest(events: AgentPushEvent[]) {
     found &&
     found.type === 'approval_required' &&
     found.request.kind !== 'delegation' &&
-    found.request.kind !== 'command'
+    found.request.kind !== 'command' &&
+    found.request.kind !== 'skill-candidate' &&
+    found.request.kind !== 'skill-install'
   )
     return found.request
   throw new Error('没有 approval_required 事件')

@@ -75,7 +75,7 @@ export class RoleMigration {
       )
     }
 
-    // 独立复审 B-02:先抢救半角色(DB 已提交、家目录未 promote 就中断的)——
+    // codex 复审 B-02:先抢救半角色(DB 已提交、家目录未 promote 就中断的)——
     // 必须在清理 staging 之前做,staging 里还留着它的家目录内容
     await this.recoverInterruptedHomes()
 
@@ -128,7 +128,7 @@ export class RoleMigration {
 
       const first = group[0]!
       // 目录名截断预留消歧后缀长度:18 字+「（999）」最长 5 字=23,容纳到三位数计数
-      // (独立复审 B-05:超长名无法通过删除确认的输名校验,角色会删不掉)
+      // (codex 复审 B-05:超长名无法通过删除确认的输名校验,角色会删不掉)
       const rawName = basename(resolve(first.cwdOriginal)) || first.cwdOriginal
       const dirName = [...rawName].slice(0, 18).join('')
       const availability = group.some((p) => p.availability === 'available') ? 'available' : 'missing'
@@ -182,7 +182,7 @@ export class RoleMigration {
   }
 
   /**
-   * 抢救半角色(独立复审 B-02):DB 有角色行但家目录缺失(上轮 DB 提交后、promote 前退出)。
+   * 抢救半角色(codex 复审 B-02):DB 有角色行但家目录缺失(上轮 DB 提交后、promote 前退出)。
    * staging 里找得到该 roleId 的完整家目录 → 原样 promote;找不到 → 按模板重建空守则
    * (守则文本若在 staging 也丢了则无法恢复,记日志;角色本体与绑定保住)。
    */
@@ -245,7 +245,7 @@ export class RoleMigration {
         plans.push({ meta, key: `unresolved:${meta.id}`, cwdOriginal: cwd ?? '', availability: 'unresolved' })
         continue
       }
-      // 独立复审 S-04:仅"目录不存在"(ENOENT)算 missing;
+      // codex 复审 S-04:仅"目录不存在"(ENOENT)算 missing;
       // 权限拒绝/IO 错误等不等于不存在,按 unresolved 处理不猜
       let exists = true
       let statBroken = false

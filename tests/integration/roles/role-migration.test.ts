@@ -155,7 +155,7 @@ describe('迁移:与既有角色共存', () => {
   })
 })
 
-describe('独立复审阻断项整改', () => {
+describe('codex 复审阻断项整改', () => {
   it('B-02 半角色抢救:DB 有行但家目录缺失 → 从 staging 恢复 promote', async () => {
     const ws = await mkdtemp(join(tmpdir(), '半角色-'))
     await seedSession(ws)

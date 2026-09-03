@@ -1,6 +1,6 @@
 /**
  * 厂商目录(应用层)。
- * ZAI 默认模型:pi 0.84.2 静态目录两区一致;live test 不通过时回退 glm-5.2/glm-4.7(R-03)。
+ * ZAI 默认模型:pi 0.84.4 静态目录两区一致;live test 不通过时回退 glm-5.2/glm-4.7(R-03)。
  */
 import type { ProviderId } from '../../shared/domain/provider'
 import type { ProviderInfo } from '../../shared/domain/provider'
@@ -11,7 +11,7 @@ export const PROVIDER_CATALOG: readonly ProviderInfo[] = [
     displayName: 'Kimi',
     defaultModelId: 'kimi-for-coding',
     description: 'Kimi Coding Plan',
-    // pi 0.84.2 静态模型表:kimi-for-coding reasoning=true, ctx=262144
+    // pi 0.84.4 静态模型表:kimi-for-coding reasoning=true, ctx=262144
     supportsThinking: true,
     contextWindow: 262144,
   },
@@ -53,10 +53,10 @@ export function defaultModelFor(providerId: ProviderId): string {
 
 /**
  * 已知模型的上下文窗口(本地规格表;与 model-list-service 同源,厂商接口不返回此值)。
- * 数值来源(A-20 扩充,2026-08-27):
- * - GLM glm-4.7/5-turbo/5.2/5.2-highspeed/5.3 与 DeepSeek、Kimi 各型号:pi 0.84.2 静态模型表
+ * 数值来源(A-20 扩充,2026-08-27;2026-08-30 随 pi 0.84.4 升级再扩充):
+ * - 全部条目:pi 0.84.4 静态模型表
  *   (node_modules/@earendil-works/pi-ai/dist/providers/data/*.json,与运行时 registry 兜底同源)
- * - glm-5.3-flash:官方文档 1M(docs.bigmodel.cn / docs.z.ai 的 GLM-5.3-Flash 页,pi 0.84.2 表外)
+ * - glm-5.3-flash 0.84.2 时为表外补录(官方文档 1M),0.84.4 起已入 pi 表
  */
 export const KNOWN_MODEL_WINDOWS: Partial<Record<ProviderId, Record<string, number>>> = {
   'kimi-coding': {
@@ -72,17 +72,23 @@ export const KNOWN_MODEL_WINDOWS: Partial<Record<ProviderId, Record<string, numb
     'glm-5.2-highspeed': 1_000_000,
     'glm-5.3': 1_000_000,
     'glm-5.3-flash': 1_000_000,
+    'glm-5.3-highspeed': 1_000_000,
   },
   'zai-coding-cn': {
+    'glm-4.6v': 128_000,
     'glm-4.7': 204_800,
     'glm-5-turbo': 200_000,
+    'glm-5.1': 200_000,
     'glm-5.2': 1_000_000,
     'glm-5.2-highspeed': 1_000_000,
     'glm-5.3': 1_000_000,
     'glm-5.3-flash': 1_000_000,
+    'glm-5.3-highspeed': 1_000_000,
+    'glm-5v-turbo': 200_000,
   },
   deepseek: {
     'deepseek-v4-flash': 1_000_000,
+    'deepseek-v4-flash-vision-exp': 1_000_000,
     'deepseek-v4-pro': 1_000_000,
   },
 }

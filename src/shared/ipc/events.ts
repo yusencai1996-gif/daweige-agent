@@ -1,5 +1,6 @@
 import type { ApprovalRequest } from '../domain/approval'
 import type { CompactionNoticeMessage, ToolExecutionInfo, ToolExecutionStatus } from '../domain/message'
+import type { MemoryMergeState } from '../domain/memory'
 
 /**
  * agent:event 推送事件——覆盖流式文本、工具状态、确认、错误、结束。
@@ -97,6 +98,18 @@ export type AgentPushEvent =
       readonly generatedAt: number
     }
   | {
+      readonly type: 'memory_changed'
+      readonly revision: number
+      readonly reason:
+        | 'note-added'
+        | 'note-deleted'
+        | 'cleared'
+        | 'migrated'
+        | 'consolidated'
+        | 'consolidation-failed'
+      readonly mergeState: MemoryMergeState
+    }
+  | {
       /** 派活状态/用量变化(0.3.0):总管会话的派活卡数据源。 */
       readonly type: 'agent_run_updated'
       readonly managerSessionId: string
@@ -126,6 +139,16 @@ export type AgentPushEvent =
     }
 
 export type AgentEventType = AgentPushEvent['type']
+
+/** 供 0.7.0 技能候选/安装卡按事件判别后直接取得精确 request 类型。 */
+export type SkillApprovalPushEvent = Omit<
+  Extract<AgentPushEvent, { readonly type: 'approval_required' }>,
+  'request'
+> & {
+  readonly request:
+    | import('../domain/approval').SkillCandidateApprovalRequest
+    | import('../domain/approval').SkillInstallApprovalRequest
+}
 
 export function assertNeverAgentEvent(type: never): never {
   throw new Error(`未处理的 agent 事件类型: ${String(type)}`)

@@ -7,6 +7,7 @@ import type { AgentPushEvent } from './events'
  */
 
 export interface DaweigeBridge {
+  /** preload 会对 RESPONSE_SCHEMAS 已冻结的 Gate 1 响应复验后再返回。 */
   invoke<C extends ContractChannel>(
     channel: C,
     payload: RequestOf<C>,

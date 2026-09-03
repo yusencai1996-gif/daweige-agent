@@ -224,6 +224,258 @@
   color: var(--accent);
 }
 
+/* 「加载更多」:列表下方居中,窄档自然换行不破版 */
+.memory-more {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+}
+
+/* ============ 技能管理(0.6.0 F1) ============ */
+.skill-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.skill-toolbar-desc {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.skill-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skill-group {
+  margin-top: 14px;
+}
+.skill-group:first-of-type {
+  margin-top: 0;
+}
+.skill-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+/* 长角色名允许折行,不横向撑破 */
+.skill-group-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 无技能角色的一行轻量空态(不成卡片、不抢视觉) */
+.skill-group-empty {
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.skill-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.skill-item-main {
+  flex: 1;
+  min-width: 0;
+}
+.skill-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.skill-item-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.skill-item-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+/* 长技能描述折行,不撑破 */
+.skill-item-desc {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  word-break: break-word;
+}
+/* 0.7.0 A3:市场技能的版本/许可摘要行 */
+.skill-item-meta {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/* 卸载入口钉在行头右侧;窄窗随 flex-wrap 落到下一行 */
+.skill-item-head-actions {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+/* 行内卸载二次确认:不成弹层,行内展开;Escape 收起、焦点归还「卸载」(逻辑在 SkillRow) */
+.skill-uninstall-confirm {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--ink-hover-04);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.7;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skill-uninstall-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.skill-uninstall-error {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+/* 诊断:朱砂弱档警示列表(沿用 workspace-warning 同语言;项目无黄色 token) */
+.skill-diagnostics {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1.5px solid color-mix(in oklch, var(--accent) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--accent) 6%, transparent);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.skill-diagnostics-title {
+  color: var(--accent);
+  font-weight: 600;
+}
+.skill-diagnostics-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--accent);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-diagnostics-list li {
+  overflow-wrap: anywhere;
+}
+.skill-diagnostics-scope {
+  color: var(--muted);
+  margin-right: 6px;
+}
+
+/* ============ 记忆管理(0.6.0 F2 追加) ============ */
+.memory-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+/* mergeState 轻量状态行:不阻塞查看和删除 */
+.memory-merge-state {
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  line-height: 1.7;
+}
+.memory-item-source {
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  line-height: 1.7;
+}
+.memory-item-time {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 一键清空确认卡:沿用角色弹层同款 overlay 形态(飞白 token 体系) */
+.memory-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(38, 53, 48, .18);
+}
+.memory-dialog {
+  width: min(460px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: var(--shadow-soft);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.memory-dialog-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.memory-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.memory-dialog-body p {
+  margin: 0;
+}
+.memory-dialog-body strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+.memory-dialog-muted {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.memory-dialog-error {
+  font-size: 12.5px;
+  color: var(--accent);
+}
+.memory-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.memory-dialog-foot-gap {
+  flex: 1;
+}
+
 /* ============ 关于与更新 ============ */
 .update-panel {
   margin-top: 14px;

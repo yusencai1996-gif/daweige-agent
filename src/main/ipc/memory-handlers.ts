@@ -1,16 +1,12 @@
-import { registerHandler } from './handler'
-import type { MemoryStore } from '../memory/memory-store'
+import type { GlobalMemoryStore } from '../memory/global-memory-store'
+import { ipcError, registerHandler } from './handler'
 
-/**
- * 记忆管理 IPC(验收新增:设置页可看可删)。
- * 数据只在本机;删除是用户主动行为,直接执行(行内二次确认在 UI 层做)。
- */
-
-export function registerMemoryHandlers(memoryStore: MemoryStore): void {
-  registerHandler('memory:list', async () => memoryStore.all())
-
-  registerHandler('memory:delete', async ({ memoryId }) => {
-    const deleted = await memoryStore.remove(memoryId)
-    return { deleted }
-  })
+export function registerMemoryHandlers(store: GlobalMemoryStore): void {
+  const recover = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try { return await operation() }
+    catch { throw ipcError('EINTERNAL', '记忆目录当前不可用，请检查目录后重启应用；原记忆文件不会被删除。') }
+  }
+  registerHandler('memory:list', async (request) => recover(() => store.listPage(request)))
+  registerHandler('memory:delete', async ({ memoryId }) => recover(() => store.delete(memoryId)))
+  registerHandler('memory:clear', async () => recover(() => store.clear()))
 }

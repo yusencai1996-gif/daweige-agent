@@ -24,7 +24,7 @@ type AssistantContent = readonly (TextContent | ThinkingContent | ToolCall)[]
 
 /** 渲染展示用:映射成大微阁 ChatMessage 判别联合。 */
 export function entriesToChatMessages(entries: readonly Entry[]): ChatMessage[] {
-  // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(独立复审阻断项)
+  // 先收集工具结果(按调用 id):被拒绝/失败/中断的操作不能错显示为成功(codex 复审阻断项)
   const erroredCalls = new Map<string, string>()
   // run_command 终值详情(0.4.0 C):从 toolResult.details 恢复 CommandBlock 数据源
   const commandDetails = new Map<string, CommandResultDetails>()
@@ -166,8 +166,13 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   make_directory: '新建文件夹',
   read_docx: '读取 Word 文档',
   write_docx: '生成 Word 文档',
+  write_pptx: '生成演示文稿',
   read_workbook: '读取表格',
   write_workbook: '写入表格',
+  'memory.add_note': '添加记忆',
+  'memory.search': '检索记忆',
+  'memory.read': '读取记忆',
   save_memory: '记事',
   search_memories: '查记事',
+  read_skill: '读取技能',
 }

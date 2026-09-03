@@ -44,6 +44,51 @@ function ctx(name: string, args: Record<string, unknown>): BeforeToolCallContext
 }
 
 describe('approval gate(beforeToolCall)', () => {
+  it('总管协作工具直通(orchestrator 专属审批),不掉进"未登记"兜底拒绝', async () => {
+    const g = gate()
+    for (const name of [
+      'spawn_role_agent', 'send_message', 'wait_agents', 'list_agents', 'followup_task', 'interrupt_agent',
+    ]) {
+      const result = await g(ctx(name, {}))
+      expect(result, name).toBeUndefined()
+    }
+    expect(events).toHaveLength(0)
+  })
+
+  it('技能 URI WRITE 带完整预览且不消费/登记 write_file 会话授权', async () => {
+    const logicalPath = 'daweige-skill://global/checklist/SKILL.md'
+    const markdown = '---\nname: checklist\ndescription: 核对任务\n---\n# 清单'
+    const target = { logicalPath, name: 'checklist', markdown, contentSha256: 'a'.repeat(64) }
+    let approvals = 0
+    const policy = new PathPolicy(workspace, appData)
+    const g = createApprovalGate({
+      broker,
+      sessionId: 's1',
+      policy,
+      managedSkillWrite: {
+        resolve: async (path) => path === logicalPath ? target : undefined,
+        approve: async () => { approvals += 1 },
+        discard: async () => {},
+        install: async () => {},
+      },
+    })
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      events.length = 0
+      const pending = g(ctx('write_file', { path: logicalPath, content: markdown }))
+      await waitForCard()
+      const event = events.find((item) => item.type === 'approval_required')
+      const request = event?.type === 'approval_required' && event.request.kind === 'write'
+        ? event.request
+        : undefined
+      expect(request?.contentPreview).toBe(markdown)
+      expect(request?.samplePaths).toEqual([logicalPath])
+      broker.resolve({ approvalId: request?.id ?? '', decision: 'approve-session' })
+      expect(await pending).toBeUndefined()
+      expect(broker.hasSessionGrant('s1', 'write_file')).toBe(false)
+    }
+    expect(approvals).toBe(2)
+  })
+
   it('写操作租约复检(codex 终验·TOCTOU):确认等待窗内新到的租约,批准/approve-session 后仍被挡', async () => {
     const p = join(workspace, 'lease.txt')
     // 奇数次(弹卡前)放行;偶数次(批准后复检)抛"正被派活使用"——模拟确认等待窗内租约新到
@@ -61,7 +106,7 @@ describe('approval gate(beforeToolCall)', () => {
     const pending = g(ctx('write_file', { path: p, content: 'x' }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    const req = card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command' ? card.request : undefined
+    const req = card && card.type === 'approval_required' && !['delegation', 'command', 'skill-candidate', 'skill-install'].includes(card.request.kind) ? card.request as import('../../../src/shared/domain/approval').FileApprovalRequest : undefined
     broker.resolve({ approvalId: req?.id ?? '', decision: 'approve' })
     const result = await pending
     expect(result).toEqual({ block: true, reason: expect.stringContaining('正被一条派活使用') })
@@ -72,7 +117,7 @@ describe('approval gate(beforeToolCall)', () => {
     const pending2 = g(ctx('write_file', { path: p, content: 'y' }))
     await waitForCard()
     const card2 = events.find((e) => e.type === 'approval_required')
-    const req2 = card2 && card2.type === 'approval_required' && card2.request.kind !== 'delegation' && card2.request.kind !== 'command' ? card2.request : undefined
+    const req2 = card2 && card2.type === 'approval_required' && !['delegation', 'command', 'skill-candidate', 'skill-install'].includes(card2.request.kind) ? card2.request as import('../../../src/shared/domain/approval').FileApprovalRequest : undefined
     broker.resolve({ approvalId: req2?.id ?? '', decision: 'approve-session' })
     const result2 = await pending2
     expect(result2).toEqual({ block: true, reason: expect.stringContaining('正被一条派活使用') })
@@ -95,7 +140,7 @@ describe('approval gate(beforeToolCall)', () => {
     const pending = g(ctx('read_file', { path: outside }))
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
-    const req = card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command' ? card.request : undefined
+    const req = card && card.type === 'approval_required' && !['delegation', 'command', 'skill-candidate', 'skill-install'].includes(card.request.kind) ? card.request as import('../../../src/shared/domain/approval').FileApprovalRequest : undefined
     expect(req?.kind).toBe('outside-read')
     expect(req?.outsideWorkspace).toBe(true)
 
@@ -137,6 +182,33 @@ describe('approval gate(beforeToolCall)', () => {
     expect(await pending).toBeUndefined()
   })
 
+  it('write_pptx 在工作区内也弹 WRITE 确认卡,应用内部路径直接拒绝', async () => {
+    const g = gate()
+    const path = join(workspace, '汇报.pptx')
+    const pending = g(ctx('write_pptx', {
+      path,
+      slides: [{ title: '季度汇报', bullets: ['第一点'] }],
+    }))
+    await waitForCard()
+    const card = events.find((event) => event.type === 'approval_required')
+    const request = card && card.type === 'approval_required' ? card.request : undefined
+    expect(request).toMatchObject({
+      kind: 'write',
+      toolName: 'write_pptx',
+      title: '我要生成 1 个演示文稿',
+      samplePaths: [path],
+    })
+    broker.resolve({ approvalId: request?.id ?? '', decision: 'approve' })
+    expect(await pending).toBeUndefined()
+
+    events.length = 0
+    expect(await g(ctx('write_pptx', {
+      path: join(appData, 'data', '内部.pptx'),
+      slides: [{ title: '不应写入', bullets: [] }],
+    }))).toMatchObject({ block: true })
+    expect(events.some((event) => event.type === 'approval_required')).toBe(false)
+  })
+
   it('拒绝无附言:统一拒绝话术', async () => {
     const g = gate()
     const pending = g(ctx('delete_paths', { paths: [join(workspace, 'a.txt')] }))
@@ -154,8 +226,8 @@ describe('approval gate(beforeToolCall)', () => {
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
     const req =
-      card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command'
-        ? card.request
+      card && card.type === 'approval_required' && !['delegation', 'command', 'skill-candidate', 'skill-install'].includes(card.request.kind)
+        ? card.request as import('../../../src/shared/domain/approval').FileApprovalRequest
         : undefined
     expect(req?.recoverable).toBe(true)
     expect(req?.itemCount).toBe(2)
@@ -181,6 +253,19 @@ describe('approval gate(beforeToolCall)', () => {
     expect(broker.pendingCount()).toBe(0)
   })
 
+  it('新版记忆工具与兼容搜索别名均为受限内部白名单', async () => {
+    for (const name of ['memory.add_note', 'memory.search', 'memory.read', 'search_memories']) {
+      expect(await gate()(ctx(name, {}))).toBeUndefined()
+    }
+    expect(broker.pendingCount()).toBe(0)
+  })
+
+  it('read_skill:应用内部只读白名单免确认', async () => {
+    const result = await gate()(ctx('read_skill', { name: 'demo' }))
+    expect(result).toBeUndefined()
+    expect(broker.pendingCount()).toBe(0)
+  })
+
   it('未登记工具:保守拒绝', async () => {
     const result = await gate()(ctx('exec_shell', { cmd: 'rm' }))
     expect(result).toMatchObject({ block: true })
@@ -197,8 +282,8 @@ describe('approval gate(beforeToolCall)', () => {
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
     const req =
-      card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command'
-        ? card.request
+      card && card.type === 'approval_required' && !['delegation', 'command', 'skill-candidate', 'skill-install'].includes(card.request.kind)
+        ? card.request as import('../../../src/shared/domain/approval').FileApprovalRequest
         : undefined
     expect(req?.itemCount).toBe(2)
     expect(req?.outsideWorkspace).toBe(true)
@@ -216,8 +301,8 @@ describe('会话级授权(A-01 approve-session)', () => {
     await waitForCard()
     const card = events.find((e) => e.type === 'approval_required')
     const req =
-      card && card.type === 'approval_required' && card.request.kind !== 'delegation' && card.request.kind !== 'command'
-        ? card.request
+      card && card.type === 'approval_required' && !['delegation', 'command', 'skill-candidate', 'skill-install'].includes(card.request.kind)
+        ? card.request as import('../../../src/shared/domain/approval').FileApprovalRequest
         : undefined
     expect(req?.toolName).toBe('write_file')
     broker.resolve({ approvalId: req?.id ?? '', decision: 'approve-session' })

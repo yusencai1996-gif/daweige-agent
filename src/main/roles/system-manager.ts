@@ -8,6 +8,7 @@ import {
 import type { RoleProfile } from '../../shared/domain/role'
 import type { SessionService } from '../storage/session-service'
 import type { RoleRepository, RoleRow } from './role-repository'
+import { seedDefaultSkillIntoHome } from '../skills/default-skill-seeder'
 
 /** 小柊的内部种子常量;不经过公共 role CRUD。 */
 export const SYSTEM_MANAGER_DISPLAY_NAME = '小柊'
@@ -123,6 +124,7 @@ async function ensureSystemHome(
   if (!workspaceMigratedAway) {
     await mkdir(systemManagerWorkspacePath(userDataPath), { recursive: true })
   }
+  await mkdir(join(home, 'memory'), { recursive: true })
   const profile: RoleProfile = {
     schemaVersion: 1,
     roleId: SYSTEM_MANAGER_ROLE_ID,
@@ -135,6 +137,7 @@ async function ensureSystemHome(
     join(home, SYSTEM_MANAGER_GUARDRAILS_REL_PATH),
     '# 小柊内置提示词\n\n此文件由大微阁版本管理,不通过公共守则接口编辑。\n',
   )
+  await seedDefaultSkillIntoHome(home, SYSTEM_MANAGER_TEMPLATE_ID)
   await writeFile(
     join(home, 'manager-prompt-version.json'),
     `${JSON.stringify({ schemaVersion: 1, promptVersion: SYSTEM_MANAGER_PROMPT_VERSION }, null, 2)}\n`,

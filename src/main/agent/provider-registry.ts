@@ -44,7 +44,7 @@ export class ProviderRegistry {
 
   /**
    * 取模型;找不到(目录未加载/ID 拼错)抛 ProviderUnavailableError,由 IPC 层转中文提示。
-   * pi 0.84.2 对 zai/kimi/deepseek 只有生成脚本写死的静态表,跟不上厂商上新
+   * pi 0.84.4 对 zai/kimi/deepseek 只有生成脚本写死的静态表,跟不上厂商上新
    * (如 glm-5.3-flash):设置页在线列表可选、运行时却认不出 →"模型还没准备好"
    * (用户 0827 真机实踩)。表外模型按同 provider 最接近的同家族模型动态构造
    * (继承 baseUrl/协议/兼容参数,上下文窗口用本地规格表或保守 128k)。

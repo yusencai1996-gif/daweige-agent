@@ -237,8 +237,8 @@ export function App({ bridge }: { readonly bridge: DaweigeBridge }) {
               onSend={(text) => void controller.send(text)}
               onAbort={() => void controller.abort()}
               onRetry={() => void controller.retryLast()}
-              onRespondApproval={(card, decision, note) =>
-                void controller.respondApproval(card, decision, note)
+              onRespondApproval={(card, decision, note, selectedOptionId) =>
+                void controller.respondApproval(card, decision, note, selectedOptionId)
               }
               onDismissReminder={controller.dismissReminder}
               onCreateRole={() => controller.openWizard()}

@@ -247,7 +247,7 @@ export class SessionService {
       this.openSessions.delete(sessionId)
       await this.repository.delete(meta)
     }
-    // 无论 pi 行是否还在,binding 都幂等清理(独立复审 S-02:
+    // 无论 pi 行是否还在,binding 都幂等清理(codex 复审 S-02:
     // pi 删除成功但 binding 清理失败被吞时,不能留永久孤儿计数)
     await this.roleRepository?.deleteBinding(sessionId).catch((err) => {
       console.error('[sessions] 会话绑定清理失败(可能残留角色计数):', err instanceof Error ? err.message : err)

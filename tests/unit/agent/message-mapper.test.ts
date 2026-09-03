@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Entry } from '@earendil-works/pi-agent-core'
-import { entriesToChatMessages } from '../../../src/main/agent/message-mapper'
+import { entriesToChatMessages, TOOL_DISPLAY_NAMES } from '../../../src/main/agent/message-mapper'
 import type { CommandResultDetails } from '../../../src/shared/domain/command'
 
 let entrySeq = 0
@@ -25,6 +25,15 @@ const sampleDetails: CommandResultDetails = {
 }
 
 describe('message-mapper:run_command 终值恢复(0.4.0 C)', () => {
+  it('0.6.0 记忆与技能工具显示中文名', () => {
+    expect(TOOL_DISPLAY_NAMES).toMatchObject({
+      'memory.add_note': '添加记忆',
+      'memory.search': '检索记忆',
+      'memory.read': '读取记忆',
+      read_skill: '读取技能',
+      write_pptx: '生成演示文稿',
+    })
+  })
   it('compaction entry 与完整旧消息共同映射为 session:open 提示行', () => {
     const old = messageEntry({ role: 'user', content: [{ type: 'text', text: '旧事实' }], timestamp: 1 })
     const compaction = {

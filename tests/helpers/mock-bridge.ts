@@ -9,11 +9,169 @@ import type { AgentPushEvent } from '../../src/shared/ipc/events'
 import type {
   AgentRunDetail,
   AgentRunSummary,
+  InstalledSkill,
   RoleDetail,
   RoleSummary,
+  SkillCandidateApprovalRequest,
+  SkillInstallApprovalRequest,
+  SkillMarketCandidate,
   UsageDashboard,
 } from '../../src/shared/domain'
 import { pruneRoleModelDefaults } from '../../src/shared/domain/model-selection'
+import { validateResponse } from '../../src/shared/ipc/schemas'
+
+export const DEMO_SKILL_MARKET_CANDIDATE: SkillMarketCandidate = {
+  optionId: 'opt_demo_01',
+  registryId: 'curated',
+  slug: 'files-and-photos-organize',
+  displayName: '文件与照片整理',
+  summary: '按类型和日期整理散乱文件，执行前先给出方案。',
+  owner: 'daweige',
+  installs: 1_280,
+  version: '1.0.0',
+  license: 'MIT',
+}
+
+/**
+ * 8 条候选的满编 fixture(0.7.0 A1 视觉/交互边界自测):
+ * 长英文 slug、长中文简介、缺可选字段(owner/version/license 缺席)、GitHub 源带星标。
+ * 字段全部来自契约,未发明任何字段。
+ */
+export const DEMO_SKILL_MARKET_CANDIDATES_8: readonly SkillMarketCandidate[] = [
+  DEMO_SKILL_MARKET_CANDIDATE,
+  {
+    optionId: 'opt_demo_02',
+    registryId: 'curated',
+    slug: 'weekly-menu-planner',
+    displayName: '一周菜谱',
+    summary: '按家里口味和冰箱存货排一周菜谱,顺带列出要补买的菜。',
+    owner: 'daweige',
+    installs: 864,
+    version: '0.9.2',
+    license: 'Apache-2.0',
+  },
+  {
+    optionId: 'opt_demo_03',
+    registryId: 'github',
+    slug: 'meeting-notes-to-action-items',
+    displayName: 'meeting-notes-to-action-items',
+    summary: 'Turn messy meeting notes into a checklist of action items with owners and due dates.',
+    owner: 'agent-skills-community',
+    stars: 2_457,
+    version: '2.1.0',
+    license: 'MIT',
+  },
+  {
+    optionId: 'opt_demo_04',
+    registryId: 'curated',
+    slug: 'invoice-summary-cn',
+    displayName: '发票汇总',
+    summary:
+      '把一摞发票照片或表格里的金额、税率、抬头逐项核对后汇总成一张总表,异常行单独列出;适合月底报销和门店对账场景,数字都有出处,不给没有依据的估算。',
+    owner: 'daweige',
+    installs: 12_304,
+    version: '1.3.0',
+    license: 'BSD-3-Clause',
+  },
+  {
+    optionId: 'opt_demo_05',
+    registryId: 'github',
+    slug: 'super-long-english-slug-for-visual-overflow-testing-purposes-only',
+    displayName: 'super-long-english-slug-for-visual-overflow-testing-purposes-only',
+    summary: 'A deliberately long slug to prove narrow windows wrap instead of breaking layout.',
+    stars: 8,
+    license: 'CC0-1.0',
+  },
+  {
+    optionId: 'opt_demo_06',
+    registryId: 'curated',
+    slug: 'travel-packing-list',
+    displayName: '出行行李清单',
+    summary: '按目的地天气和行程天数给一份行李清单,出门前逐项打勾。',
+    owner: 'daweige',
+    installs: 96,
+  },
+  {
+    optionId: 'opt_demo_07',
+    registryId: 'github',
+    slug: 'readme-polisher',
+    displayName: 'readme-polisher',
+    summary: 'Polish README structure and wording.',
+    owner: 'docs-lab',
+    stars: 305,
+    version: '0.4.1',
+    license: 'Apache-2.0',
+  },
+  {
+    optionId: 'opt_demo_08',
+    registryId: 'curated',
+    slug: 'essay-outline-builder',
+    displayName: '长文提纲',
+    summary: '先搭骨架再填肉的长文写法:三章九节,每节一句核心。',
+    owner: 'daweige',
+    installs: 5_678,
+    version: '1.1.0',
+    license: 'MIT',
+  },
+]
+
+export function demoSkillCandidateApproval(
+  createdAt = Date.now(),
+  candidates: readonly SkillMarketCandidate[] = [DEMO_SKILL_MARKET_CANDIDATE],
+): SkillCandidateApprovalRequest {
+  return {
+    id: 'approval-skill-candidate-demo',
+    kind: 'skill-candidate',
+    title: `找到 ${candidates.length} 个可用技能`,
+    description: '请选择要继续预览的技能。',
+    query: 'file organize',
+    candidates,
+    createdAt,
+    toolCallId: 'tool-search-skills-demo',
+  }
+}
+
+export function demoSkillInstallApproval(createdAt = Date.now()): SkillInstallApprovalRequest {
+  return {
+    id: 'approval-skill-install-demo',
+    kind: 'skill-install',
+    title: '准备安装“文件与照片整理”',
+    description: '请确认来源、许可和技能正文预览。',
+    candidate: DEMO_SKILL_MARKET_CANDIDATE,
+    markdownPreview: '# 文件与照片整理\n\n先查看目录，再给出分类方案。',
+    markdownBytes: 67,
+    previewTruncated: false,
+    targetLogicalLocation: 'daweige-skill://global/files-and-photos-organize/SKILL.md',
+    createdAt,
+    toolCallId: 'tool-install-skill-demo',
+  }
+}
+
+/**
+ * 超长截断预览 fixture(0.7.0 A2 视觉边界自测):正文超过 UI 预览预算,
+ * previewTruncated=true,前端应头尾展示+中间明确截断标记。
+ * 正文由确定模板拼装,不含任何真实密钥/路径。
+ */
+export function demoSkillInstallApprovalLong(createdAt = Date.now()): SkillInstallApprovalRequest {
+  const section = (index: number) =>
+    `\n\n## 第 ${index} 步\n\n- 先确认当前目录里有什么,不猜不编。\n- 把同类文件归到一处,命名保持 yyyy-mm 习惯。\n- 动手前列出清单给用户过目,用户点头再移。\n- 遇到拿不准的先问,不擅自做主。`
+  let body = '# 文件与照片整理\n\n先查看目录,再给出分类方案;用户确认后才动手。'
+  for (let i = 1; i <= 24; i += 1) body += section(i)
+  body += '\n\n## 验收\n\n- 每张图片都有归属文件夹。\n- 原位置不留副本。\n- 清单和实际移动结果一致。\n'
+  return {
+    id: 'approval-skill-install-demo-long',
+    kind: 'skill-install',
+    title: '准备安装“文件与照片整理”',
+    description: '请确认来源、许可和技能正文预览。',
+    candidate: DEMO_SKILL_MARKET_CANDIDATE,
+    markdownPreview: body,
+    markdownBytes: new TextEncoder().encode(body).byteLength,
+    previewTruncated: true,
+    targetLogicalLocation: 'daweige-skill://global/files-and-photos-organize/SKILL.md',
+    createdAt,
+    toolCallId: 'tool-install-skill-demo-long',
+  }
+}
 
 /**
  * 契约 mock 桥(M1-04)——渲染进程 UI 开发与单元测试用。
@@ -60,7 +218,10 @@ export class MockBridge implements DaweigeBridge {
         new Error(`MockBridge: 通道 ${channel} 未注册行为;请先 bridge.handle('${channel}', ...)`),
       )
     }
-    return (await handler(payload)) as ResponseOf<C>
+    const response = await handler(payload)
+    const validation = validateResponse(channel, response)
+    if (!validation.ok) throw new Error(`MockBridge: ${validation.message}`)
+    return validation.value
   }
 
   onAgentEvent(listener: (event: AgentPushEvent) => void): () => void {
@@ -442,6 +603,88 @@ export class MockBridge implements DaweigeBridge {
       }
     })
     this.handle('reminder:listUpcoming', () => bootstrap.upcomingReminders)
+    let skillGeneration = 1
+    let mockSkills: InstalledSkill[] = [
+      {
+        id: 'global:demo-skill',
+        name: 'demo-skill',
+        description: '演示技能',
+        source: { kind: 'global' },
+        builtIn: false,
+        logicalLocation: 'daweige-skill://global/demo-skill/SKILL.md',
+        provenance: {
+          kind: 'market',
+          registryId: 'curated',
+          registryName: '内置精选',
+          slug: 'demo-skill',
+          installedAt: now - 86_400_000,
+          license: 'MIT',
+        },
+        canUninstall: true,
+      },
+    ]
+    const skillSnapshot = () => ({
+      generation: skillGeneration,
+      skills: mockSkills,
+      diagnostics: [],
+      effectiveFrom: 'new-session' as const,
+    })
+    this.handle('skill:list', () => skillSnapshot())
+    this.handle('skill:refresh', () => {
+      skillGeneration += 1
+      return skillSnapshot()
+    })
+    this.handle('skill:uninstall', ({ skillId, expectedGeneration }) => {
+      if (expectedGeneration !== skillGeneration) throw new Error('技能列表已经变化,请刷新后重试')
+      const skill = mockSkills.find((item) => item.id === skillId)
+      if (!skill?.canUninstall) throw new Error('这个技能不能由设置页卸载')
+      mockSkills = mockSkills.filter((item) => item.id !== skillId)
+      skillGeneration += 1
+      return skillSnapshot()
+    })
+    this.handle('skill:openFolder', () => undefined)
+    let memoryRevision = 1
+    let memoryEntries = [
+      {
+        id: '2026-08-30T12-00-00-demo-memory.md',
+        content: '演示记忆',
+        createdAt: now,
+        source: {
+          kind: 'conversation' as const,
+          roleId: 'sys-xiaozhen',
+          roleDisplayName: '小柊',
+        },
+      },
+    ]
+    this.handle('memory:list', ({ cursor, limit = 50 }) => {
+      const match = cursor === undefined ? undefined : /^mock:(\d+):(\d+)$/.exec(cursor)
+      const cursorRevision = match ? Number(match[1]) : memoryRevision
+      const reset = cursor !== undefined && cursorRevision !== memoryRevision
+      const offset = reset || !match ? 0 : Number(match[2])
+      const entries = memoryEntries.slice(offset, offset + limit)
+      const nextOffset = offset + entries.length
+      return {
+        revision: memoryRevision,
+        mergeState: 'clean',
+        entries,
+        ...(nextOffset < memoryEntries.length ? { nextCursor: `mock:${memoryRevision}:${nextOffset}` } : {}),
+        total: memoryEntries.length,
+        reset,
+      }
+    })
+    this.handle('memory:delete', ({ memoryId }) => {
+      const before = memoryEntries.length
+      memoryEntries = memoryEntries.filter((entry) => entry.id !== memoryId)
+      const deleted = memoryEntries.length !== before
+      if (deleted) memoryRevision += 1
+      return { deleted, revision: memoryRevision, mergeState: deleted ? 'pending' : 'clean' }
+    })
+    this.handle('memory:clear', () => {
+      const deletedCount = memoryEntries.length
+      memoryEntries = []
+      if (deletedCount > 0) memoryRevision += 1
+      return { deletedCount, revision: memoryRevision, mergeState: deletedCount > 0 ? 'pending' : 'clean' }
+    })
     this.handle('workspace:choose', () => 'C:\\Users\\demo\\Documents\\测试工作区')
     this.handle('session:rename', ({ sessionId, title }) => ({
       ...(bootstrap.sessions.find((s) => s.id === sessionId) ?? bootstrap.sessions[0]!),

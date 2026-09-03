@@ -13,8 +13,10 @@ import { createDeletePathsTool } from './tools/delete-paths'
 import { createMakeDirectoryTool } from './tools/make-directory'
 import { createReadDocxTool } from './tools/read-docx'
 import { createWriteDocxTool } from './tools/write-docx'
+import { createWritePptxTool } from './tools/write-pptx'
 import { createReadWorkbookTool } from './tools/read-workbook'
 import { createWriteWorkbookTool } from './tools/write-workbook'
+import type { ManagedSkillWriteResolver } from '../skills/managed-skill-write'
 
 /**
  * 工具注册表(M4-07)。
@@ -33,11 +35,19 @@ export const TOOL_NAMES = [
   'make_directory',
   'read_docx',
   'write_docx',
+  'write_pptx',
   'read_workbook',
   'write_workbook',
   // M5:
   'save_memory',
   'search_memories',
+  'memory.add_note',
+  'memory.search',
+  'memory.read',
+  // 0.6.0 会话冻结技能快照:
+  'read_skill',
+  'search_skills',
+  'install_skill',
   // 0.2.0 角色化:
   'edit_role_guardrails',
   // 0.3.0 总管协作工具:
@@ -63,6 +73,11 @@ export interface ToolRegistryDeps {
    * 三种上下文都可提供(各自写根不同);未提供=该上下文没有命令能力(安全缺省)。
    */
   runCommandTool?: () => AgentTool | undefined
+  /** 0.7.0 技能市场；只注入用户可见会话，internal/delegated 永不提供。 */
+  marketTools?: () => AgentTool[]
+  /** 用户可见会话的受控技能写入；delegated/internal 不注入。 */
+  managedSkillWrite?: ManagedSkillWriteResolver
+  sessionId?: string
 }
 
 export type ToolContext = 'regular-worker' | 'manager' | 'delegated-worker'
@@ -71,7 +86,13 @@ export function buildTools(
   deps: ToolRegistryDeps,
   context: ToolContext = 'regular-worker',
 ): AgentTool[] {
-  const toolDeps: ToolDeps = { ops: deps.ops, trash: deps.trash }
+  const allowManagedSkillWrite = context !== 'delegated-worker' && deps.managedSkillWrite !== undefined
+  const toolDeps: ToolDeps = {
+    ops: deps.ops,
+    trash: deps.trash,
+    ...(allowManagedSkillWrite ? { managedSkillWrite: deps.managedSkillWrite } : {}),
+    ...(allowManagedSkillWrite && deps.sessionId ? { sessionId: deps.sessionId } : {}),
+  }
   const runCommand = deps.runCommandTool?.()
   const fileTools = [
     createReadFileTool(toolDeps),
@@ -84,12 +105,15 @@ export function buildTools(
     createMakeDirectoryTool(toolDeps),
     createReadDocxTool(toolDeps),
     createWriteDocxTool(toolDeps),
+    createWritePptxTool(toolDeps),
     createReadWorkbookTool(toolDeps),
     createWriteWorkbookTool(toolDeps),
   ]
   if (context === 'manager') {
     return [
+      ...(allowManagedSkillWrite ? [createWriteFileTool({ ...toolDeps, managedSkillWriteOnly: true })] : []),
       ...(deps.memoryTools?.() ?? []),
+      ...(deps.marketTools?.() ?? []),
       ...(deps.managerTools?.() ?? createManagerCollaborationSkeletonTools()),
       ...(runCommand ? [runCommand] : []),
     ]
@@ -100,6 +124,7 @@ export function buildTools(
   return [
     ...fileTools,
     ...(deps.memoryTools?.() ?? []),
+    ...(deps.marketTools?.() ?? []),
     ...(deps.roleRulesTools?.() ?? []),
     ...(runCommand ? [runCommand] : []),
   ]

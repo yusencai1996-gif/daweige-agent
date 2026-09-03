@@ -14,6 +14,8 @@ import { SYSTEM_MANAGER_ROLE_ID } from '../../../shared/domain/manager'
 import { ReminderBanner } from '../reminders/ReminderBanner'
 import { ApprovalCard } from '../approvals/ApprovalCard'
 import { CommandApprovalCard } from '../approvals/CommandApprovalCard'
+import { SkillCandidateApprovalCard } from '../approvals/SkillCandidateApprovalCard'
+import { SkillInstallApprovalCard } from '../approvals/SkillInstallApprovalCard'
 import { Composer } from './Composer'
 import { MessageList } from './MessageList'
 import { mergeTimeline } from '../manager/conversation-timeline'
@@ -81,6 +83,8 @@ interface ChatViewProps {
     card: ApprovalCardState,
     decision: ApprovalDecision,
     note: string,
+    /** skill-candidate 批准时携带候选的 opaque optionId。 */
+    selectedOptionId?: string,
   ) => void
   readonly onDismissReminder: (memoryId: string) => void
   /** 空应用欢迎页主按钮:打开新建角色向导(0.2.0 起新会话挂在角色下)。 */
@@ -259,13 +263,35 @@ export function ChatView({
         {floatingApprovals.length > 0 && (
           <div className="approval-overlay">
             <div className="approval-stack">
-              {floatingApprovals.map((card) =>
-                card.request.kind === 'command' ? (
-                  <CommandApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
-                ) : (
-                  <ApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
-                ),
-              )}
+              {floatingApprovals.map((card) => {
+                // 按审批 kind 路由专用卡(0.7.0 技能双卡入列);其余文件/守则卡走通用卡
+                switch (card.request.kind) {
+                  case 'command':
+                    return (
+                      <CommandApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
+                    )
+                  case 'skill-candidate':
+                    return (
+                      <SkillCandidateApprovalCard
+                        key={card.request.id}
+                        card={card}
+                        onRespond={onRespondApproval}
+                      />
+                    )
+                  case 'skill-install':
+                    return (
+                      <SkillInstallApprovalCard
+                        key={card.request.id}
+                        card={card}
+                        onRespond={onRespondApproval}
+                      />
+                    )
+                  default:
+                    return (
+                      <ApprovalCard key={card.request.id} card={card} onRespond={onRespondApproval} />
+                    )
+                }
+              })}
             </div>
           </div>
         )}

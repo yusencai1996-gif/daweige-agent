@@ -29,8 +29,11 @@ export function maskKey(key: string): string {
 export function redactCommonSecrets(text: string): string {
   return text
     .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, (m) => `${m.slice(0, 5)}***`)
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKI***')
+    .replace(/(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})/gi, '$1***')
     .replace(
-      /(\b(?:api[_-]?key|token|authorization|password|secret)\b\s*[:=]\s*["']?(?:bearer\s+)?)([A-Za-z0-9_-]{8,})/gi,
+      /(\b(?:api[_-]?key|token|authorization|password|secret|kimi[_-]?key|glm[_-]?key|zai[_-]?key|deepseek[_-]?key)\b\s*[:=]\s*["']?(?:bearer\s+)?)([A-Za-z0-9._~+/=-]{8,})/gi,
       '$1***',
     )
+    .replace(/\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g, '***.***')
 }

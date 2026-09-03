@@ -1,7 +1,7 @@
 {
   "name": "daweige-agent",
   "productName": "大微阁",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "description": "大微阁——桌面 AI 干活助理(水墨风,pi runtime,自填 API key)",
   "private": true,
   "type": "module",
@@ -18,16 +18,18 @@
     "test:e2e": "playwright test",
     "sandbox:build": "node scripts/build-sandbox-helper.mjs",
     "sandbox:test": "cargo test --manifest-path native/daweige-sandbox-helper/Cargo.toml",
-    "dist:win": "npm run sandbox:build && electron-vite build && electron-builder --win --x64"
+    "dist:win": "npm run sandbox:build && electron-vite build && electron-builder --win --x64",
+    "gen:skills": "node scripts/gen-default-skills.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.84.2",
-    "@earendil-works/pi-ai": "0.84.2",
-    "@earendil-works/pi-session-backend-sqlite-node": "0.84.2",
+    "@earendil-works/pi-agent-core": "0.84.4",
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-session-backend-sqlite-node": "0.84.4",
     "@sinclair/typebox": "^0.34.52",
     "docx": "9.7.1",
     "electron-updater": "^6.8.9",
     "mammoth": "1.12.1",
+    "pptxgenjs": "4.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",

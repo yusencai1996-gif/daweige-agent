@@ -174,7 +174,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .tool-status.running .tool-status-dot {
-    /* 状态指示不全停(用户 0827 真机实测"圈不会转"像卡死):降级为慢速呼吸 */
+    /* 状态指示不全停(森哥 0827 真机实测"圈不会转"像卡死):降级为慢速呼吸 */
     animation: tool-pulse 1.6s ease-in-out infinite;
   }
 }

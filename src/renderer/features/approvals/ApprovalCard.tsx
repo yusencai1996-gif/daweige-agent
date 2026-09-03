@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import type { ApprovalDecision, FileApprovalRequest } from '../../../shared/domain'
 import type { ApprovalCardState, ApprovalPhase } from '../../app/use-app-controller'
+import { skillNameFromSamplePaths } from './skill-display'
+import { SkillMarkdownPreview } from './SkillMarkdownPreview'
 
 interface ApprovalCardProps {
   readonly card: ApprovalCardState
@@ -53,17 +55,31 @@ export function ApprovalCard({ card, onRespond }: ApprovalCardProps) {
   const [note, setNote] = useState('')
   const interactive = phase === 'pending' && !card.responded
   const isCommand = request.kind === 'command'
+  // skill-candidate/skill-install(0.7.0)在 ChatView 已路由到专用卡,这里只收文件/守则/命令卡;
+  // 类型层收窄,运行层正常到不了这个分支
+  const isSkillKind = request.kind === 'skill-candidate' || request.kind === 'skill-install'
   // command(0.4.0 C)最小过渡:C4 换 CommandApprovalCard 专用渲染;
   // 这里先展示通用字段+命令原文,不给会话级授权(独立 CommandApprovalCache 语义)
-  const fileRequest = isCommand ? undefined : request
+  const fileRequest = isCommand || isSkillKind ? undefined : request
+  // B(0.7.0)受控技能逻辑 URI 写入:请求带 contentPreview 即技能分支(契约新增可选字段);
+  // 普通文件 WRITE 卡外观字段零变化
+  const skillWriteRequest =
+    fileRequest !== undefined && fileRequest.kind === 'write' && fileRequest.contentPreview !== undefined
+      ? fileRequest
+      : undefined
+  const skillWritePreview = skillWriteRequest?.contentPreview
+  const skillWriteName =
+    skillWriteRequest === undefined ? null : skillNameFromSamplePaths(skillWriteRequest.samplePaths)
   // 「本次会话全部允许」只对工作区内、非删除、有工具名的操作开放(A-01/A-03);
-  // 守则修改(role-rules-edit)按契约永远逐次确认(PLAN §3.3),不给会话级授权。
+  // 守则修改(role-rules-edit)按契约永远逐次确认(PLAN §3.3),不给会话级授权;
+  // 技能逻辑 URI 写入(0.7.0 B)永远逐次确认,不吃普通写工具的 session grant(PLAN §3.2)。
   const canApproveSession =
     !isCommand &&
     fileRequest !== undefined &&
     fileRequest.toolName !== undefined &&
     fileRequest.kind !== 'delete' &&
     fileRequest.kind !== 'role-rules-edit' &&
+    fileRequest.contentPreview === undefined &&
     fileRequest.outsideWorkspace === false
 
   return (
@@ -91,7 +107,7 @@ export function ApprovalCard({ card, onRespond }: ApprovalCardProps) {
               )}
             </div>
 
-            {fileRequest.samplePaths.length > 0 && (
+            {skillWriteRequest === undefined && fileRequest.samplePaths.length > 0 && (
               <ul className="approval-paths">
                 {fileRequest.samplePaths.map((path) => (
                   <li key={path}>{path}</li>
@@ -101,6 +117,22 @@ export function ApprovalCard({ card, onRespond }: ApprovalCardProps) {
 
             {fileRequest.outsideWorkspace && (
               <div className="approval-outside">注意:这在你的工作文件夹外面。</div>
+            )}
+
+            {skillWriteRequest !== undefined && skillWritePreview !== undefined && (
+              <>
+                <div className="skill-write-flags">
+                  <span className="approval-badge">
+                    {skillWriteName === null ? '全局技能' : `全局技能 / ${skillWriteName}`}
+                  </span>
+                  <span className="approval-badge">纯 Markdown</span>
+                  <span className="approval-badge">新对话生效</span>
+                </div>
+                <SkillMarkdownPreview
+                  content={skillWritePreview}
+                  totalBytes={new TextEncoder().encode(skillWritePreview).byteLength}
+                />
+              </>
             )}
           </>
         )

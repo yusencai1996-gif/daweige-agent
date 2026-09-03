@@ -1,7 +1,7 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import type { ContractChannel, RequestOf, ResponseOf } from '../../shared/ipc/contracts'
 import { INVOKE_CHANNELS } from '../../shared/ipc/channels'
-import { validateRequest } from '../../shared/ipc/schemas'
+import { validateRequest, validateResponse } from '../../shared/ipc/schemas'
 import { isIpcErrorPayload, type IpcErrorPayload, type IpcErrorCode } from '../../shared/ipc/errors'
 import { redactCommonSecrets } from '../security/redaction'
 import { isSenderAllowed } from './validate-sender'
@@ -9,7 +9,8 @@ import { isSenderAllowed } from './validate-sender'
 /**
  * IPC 安全注册层(M2-02)。
  * 所有 handler 必须经 registerHandler 注册;installIpcGate 统一挂 ipcMain.handle,
- * 每次调用过三道闸:sender 校验 → 入参 schema 校验 → 错误序列化脱敏。
+ * 每次调用过四道闸:sender 校验 → 入参 schema 校验 → handler → **response schema 校验**。
+ * response 校验在主进程权威层完成(0.7.0:sandbox preload 不能引外部依赖,response 复验从 preload 移至此处)。
  * 未登记通道直接拒绝(渲染进程不可信)。
  */
 
@@ -62,10 +63,20 @@ export function installIpcGate(): void {
         throw serializeError(ipcErrorPayload('EINVALID_REQUEST', validation.message))
       }
       try {
-        return await (handler as (p: unknown, e: IpcMainInvokeEvent) => Promise<unknown>)(
-          payload,
-          event,
-        )
+        const result = await (
+          handler as (p: unknown, e: IpcMainInvokeEvent) => Promise<unknown>
+        )(payload, event)
+        const responseValidation = validateResponse(channel, result)
+        if (!responseValidation.ok) {
+          console.error(
+            `[ipc:${channel}] response 校验失败:`,
+            redactCommonSecrets(responseValidation.message),
+          )
+          throw new IpcError(
+            ipcErrorPayload('EINTERNAL', '出了点问题,请重试;若持续出现请重启应用'),
+          )
+        }
+        return responseValidation.value
       } catch (err) {
         if (err instanceof IpcError) {
           throw serializeError(err.payload)

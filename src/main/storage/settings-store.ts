@@ -52,7 +52,7 @@ export class SettingsStore {
       throw new Error('设置数据不合法,拒绝保存')
     }
     await fs.mkdir(dirname(this.filePath), { recursive: true })
-    // 随机后缀防并发写撞同一 tmp(独立复审建议)
+    // 随机后缀防并发写撞同一 tmp(codex 复审建议)
     const tmp = `${this.filePath}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.tmp`
     await fs.writeFile(tmp, JSON.stringify(settings, null, 2), 'utf-8')
     await fs.rename(tmp, this.filePath)

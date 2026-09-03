@@ -1,24 +1,65 @@
-# Dependencies and build output
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 out/
+release/
 release-v*/
+# build/ 下只跟踪源资产;忽略整目录会让 ! 例外失效,故用通配
+build/*
+!build/icon.ico
+!build/app-icon-sen.png
 
-# Local configuration and secrets
+# Rust sandbox helper build artifacts
+native/daweige-sandbox-helper/target/
+
+# Electron builder artifacts
+*.exe
+*.blockmap
+*.nsis.7z
+
+# Environment & secrets
 .env*
 *.key
 *.pem
 
-# Local data and test output
+# Local user data (dev test)
 *.sqlite
 *.db
-test-results/
+userData/
 
-# System and editor files
+# OS / IDE
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 
-# Logs
+# Logs & caches
 *.log
+.cache/
+
+# Test artifacts
+test-results/
+playwright-report/
+coverage/
+
+.playwright-mcp/
+
+# 验收截图含真实用户用量/会话标题(隐私,绝不进 git;本地留档)——codex 复审 C-01
+docs/design/acceptance-check/
+
+# 一次性验证探针(硬编码本机路径,不可移植)——codex 复审 S-06
+/tools/
+scripts/fix-nul.cjs
+
+# 角色化真机验收临时目录(测试数据备份/中文测试文件夹,本地一次性)
+.accept-tmp/
+
+# 0.3.0 验证截图(体积产物,不进版本库;公开仓 README 图同步时单独拷)
+docs/screenshots/
+小红书文案-*.md
+
+# 临时产物(全局约定:.tmp/ 目录与 .tmp- 前缀文件随时可删)
+.tmp/
+.tmp-*

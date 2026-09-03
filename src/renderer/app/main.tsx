@@ -4,7 +4,8 @@ import type {
   AgentRunDetail,
   AgentRunSummary,
   ChatMessage,
-  MemoryEntry,
+  InstalledSkill,
+  MemoryNoteSummary,
   SessionDetail,
   SessionSummary,
 } from '../../shared/domain'
@@ -273,6 +274,8 @@ function wireDemoBehaviors(mock: MockBridge): void {
     string,
     { sessionId: string; toolCallId: string; messageId: string }
   >()
+  /** 0.7.0 A 演示:技能候选卡 → 安装预览卡两阶段(awaiting 中的审批 id → 归属会话与阶段)。 */
+  const pendingSkillApprovals = new Map<string, { sessionId: string; stage: 'candidate' | 'install' }>()
 
   // 0.3.0 批 2a 演示:种子里那条「待确认」的派活(run-b2c3d4e5f6a70829,派给小编)
   // 补一张 delegation 确认卡事件;点[同意派出]/[不派]后演示 run 原位变状态卡。
@@ -592,47 +595,206 @@ function wireDemoBehaviors(mock: MockBridge): void {
     message: '连接正常,当前模型 kimi-for-coding',
   }))
 
-  // 记忆管理演示数据:dev 预览走同一座桥,可真实演练查看/删除
-  const demoMemories: MemoryEntry[] = [
+  // 记忆管理演示数据:0.7.0 分页契约,dev 预览可真实演练查看/删除/清空
+  let memoryRevision = 3
+  const demoMemoryEntries: MemoryNoteSummary[] = [
     {
-      id: 'demo-mem-1',
-      text: '我妈生日是三月五号',
+      id: '2026-08-29T09-15-00-mama-shengri.md',
+      content: '我妈生日是三月五号',
       title: '妈妈生日',
       category: '生日',
       date: { kind: 'recurring', month: 3, day: 5 },
       createdAt: now - 86_400_000,
+      source: { kind: 'conversation', roleId: 'sys-xiaozhen', roleDisplayName: '小柊' },
     },
     {
-      id: 'demo-mem-2',
-      text: '和老婆结婚纪念日是 2020 年 10 月 1 日',
+      id: '2026-08-28T20-40-00-jiehun-jinian.md',
+      content: '和老婆结婚纪念日是 2020 年 10 月 1 日',
       title: '结婚纪念日',
       category: '纪念日',
       date: { kind: 'recurring', month: 10, day: 1 },
       createdAt: now - 2 * 86_400_000,
+      source: { kind: 'conversation', roleId: 'agent-a1b2c3d4e5f6', roleDisplayName: '小编' },
     },
     {
-      id: 'demo-mem-3',
-      text: '2026-09-01 车子要年检',
+      id: '2026-08-27T08-05-00-chezi-nianjian.md',
+      content: '2026-09-01 车子要年检',
       title: '车子年检',
       category: '待办',
       date: { kind: 'fixed', iso: '2026-09-01' },
       createdAt: now - 3 * 86_400_000,
+      source: { kind: 'life-note-migration', legacyId: 'demo-mem-3' },
     },
     {
-      id: 'demo-mem-4',
-      text: '我喜欢喝淡一点的茶',
+      id: '2026-08-26T07-30-00-hecha-pianhao.md',
+      content: '我喜欢喝淡一点的茶',
       title: '喝茶偏好',
       category: '偏好',
       createdAt: now - 4 * 86_400_000,
+      source: { kind: 'life-note-migration', legacyId: 'demo-mem-4' },
+    },
+    {
+      // 长中文内容:验证窄窗折行不破版
+      id: '2026-08-25T18-20-00-chufang-zhengli.md',
+      content:
+        '厨房抽屉里那包没拆封的龙井是去年朋友从杭州带回来的,保质期到年底;岳母嘱咐过好茶要先紧着客人喝,自己平时喝普通的就行,别忘了先把旧茶喝完再拆新的。',
+      createdAt: now - 5 * 86_400_000,
+      source: { kind: 'conversation', roleId: 'sys-xiaozhen', roleDisplayName: '小柊' },
     },
   ]
-  mock.handle('memory:list', () => demoMemories)
-  mock.handle('memory:delete', ({ memoryId }) => {
-    const index = demoMemories.findIndex((m) => m.id === memoryId)
-    if (index < 0) return { deleted: false }
-    demoMemories.splice(index, 1)
-    return { deleted: true }
+  mock.handle('memory:list', ({ cursor, limit = 50 }) => {
+    const offset = cursor === undefined ? 0 : Number(cursor.replace('demo:', ''))
+    const safeOffset = Number.isInteger(offset) && offset >= 0 ? offset : 0
+    const entries = demoMemoryEntries.slice(safeOffset, safeOffset + limit)
+    const nextOffset = safeOffset + entries.length
+    return {
+      revision: memoryRevision,
+      mergeState: 'clean' as const,
+      entries,
+      ...(nextOffset < demoMemoryEntries.length ? { nextCursor: `demo:${nextOffset}` } : {}),
+      total: demoMemoryEntries.length,
+      reset: false,
+    }
   })
+  mock.handle('memory:delete', ({ memoryId }) => {
+    const index = demoMemoryEntries.findIndex((m) => m.id === memoryId)
+    if (index < 0) return { deleted: false, revision: memoryRevision, mergeState: 'clean' as const }
+    demoMemoryEntries.splice(index, 1)
+    memoryRevision += 1
+    return { deleted: true, revision: memoryRevision, mergeState: 'pending' as const }
+  })
+  mock.handle('memory:clear', () => {
+    const deletedCount = demoMemoryEntries.length
+    demoMemoryEntries.length = 0
+    if (deletedCount > 0) memoryRevision += 1
+    return {
+      deletedCount,
+      revision: memoryRevision,
+      mergeState: deletedCount > 0 ? 'pending' as const : 'clean' as const,
+    }
+  })
+
+  // 技能演示数据(0.6.0 F1;0.7.0 A3 补 market/manual 来源行):全局一组+两个角色各一组+一条诊断,刷新可见 generation 变化
+  let skillGeneration = 2
+  const demoSkills: InstalledSkill[] = [
+    {
+      id: 'global:weekly-menu',
+      name: 'weekly-menu',
+      description: '按家里口味和冰箱存货排一周菜谱,顺带列出要补买的菜。',
+      source: { kind: 'global' },
+      builtIn: false,
+      logicalLocation: 'daweige-skill://global/weekly-menu/SKILL.md',
+      provenance: { kind: 'authored' },
+      canUninstall: true,
+    },
+    {
+      // 0.7.0 A3 演示:内置精选来源(元信息齐全)
+      id: 'global:files-and-photos-organize',
+      name: 'files-and-photos-organize',
+      description: '按类型和日期整理散乱文件,执行前先给出方案。',
+      source: { kind: 'global' },
+      builtIn: false,
+      logicalLocation: 'daweige-skill://global/files-and-photos-organize/SKILL.md',
+      provenance: {
+        kind: 'market',
+        registryId: 'curated',
+        registryName: '内置精选',
+        slug: 'files-and-photos-organize',
+        owner: 'daweige',
+        version: '1.0.0',
+        license: 'MIT',
+        installedAt: now - 2 * 86_400_000,
+      },
+      canUninstall: true,
+    },
+    {
+      // 0.7.0 A3 演示:GitHub 来源(缺 version/license,元信息按缺失省略)
+      id: 'global:meeting-notes-to-action-items',
+      name: 'meeting-notes-to-action-items',
+      description: '把散乱会议纪要整理成带负责人和截止时间的行动清单。',
+      source: { kind: 'global' },
+      builtIn: false,
+      logicalLocation: 'daweige-skill://global/meeting-notes-to-action-items/SKILL.md',
+      provenance: {
+        kind: 'market',
+        registryId: 'github',
+        registryName: 'GitHub',
+        slug: 'meeting-notes-to-action-items',
+        owner: 'agent-skills-community',
+        installedAt: now - 86_400_000,
+      },
+      canUninstall: true,
+    },
+    {
+      // 0.7.0 A3 演示:手动放进文件夹的技能(自装,不可由设置页卸载)
+      id: 'global:my-packing-list',
+      name: 'my-packing-list',
+      description: '自己写的出行行李清单模板,直接从文件夹放进去的。',
+      source: { kind: 'global' },
+      builtIn: false,
+      logicalLocation: 'daweige-skill://global/my-packing-list/SKILL.md',
+      provenance: { kind: 'manual' },
+      canUninstall: false,
+    },
+    {
+      id: 'role:sys-xiaozhen:delegation-breakdown',
+      name: 'delegation-breakdown',
+      description: '把大活拆成小步派给合适的伙伴:先定目标,再列验收标准,最后盯结果。',
+      source: { kind: 'role', roleId: 'sys-xiaozhen', roleDisplayName: '小柊' },
+      builtIn: true,
+      logicalLocation: 'daweige-skill://role/sys-xiaozhen/delegation-breakdown/SKILL.md',
+      provenance: { kind: 'built-in' },
+      canUninstall: false,
+    },
+    {
+      id: 'role:agent-a1b2c3d4e5f6:work-report-writing',
+      name: 'work-report-writing',
+      description:
+        '工作汇报写法:先结论后过程,数字要有出处,段落之间留气口;周报、月报、项目总结都按这个路子走,篇幅长的时候先搭骨架再填肉。',
+      source: { kind: 'role', roleId: 'agent-a1b2c3d4e5f6', roleDisplayName: '小编' },
+      builtIn: true,
+      logicalLocation: 'daweige-skill://role/agent-a1b2c3d4e5f6/work-report-writing/SKILL.md',
+      provenance: { kind: 'built-in' },
+      canUninstall: false,
+    },
+    {
+      id: 'role:agent-b2c3d4e5f6a7:multi-sheet-reconcile',
+      name: 'multi-sheet-reconcile',
+      description: '多张表格对账:先读预览摸清列结构,逐表核对后再汇总,异常行单独列出来。',
+      source: { kind: 'role', roleId: 'agent-b2c3d4e5f6a7', roleDisplayName: '账房' },
+      builtIn: true,
+      logicalLocation: 'daweige-skill://role/agent-b2c3d4e5f6a7/multi-sheet-reconcile/SKILL.md',
+      provenance: { kind: 'built-in' },
+      canUninstall: false,
+    },
+  ]
+  const demoSkillSnapshot = () => ({
+    generation: skillGeneration,
+    skills: demoSkills,
+    diagnostics: [
+      {
+        code: 'parse_failed' as const,
+        message: '技能「随手记模板」的开头信息写坏了,已跳过;修好格式后点「刷新」再试。',
+        source: { kind: 'global' as const },
+        relativePath: 'broken-note/SKILL.md',
+      },
+    ],
+    effectiveFrom: 'new-session' as const,
+  })
+  mock.handle('skill:list', () => demoSkillSnapshot())
+  mock.handle('skill:refresh', () => {
+    skillGeneration += 1
+    return demoSkillSnapshot()
+  })
+  mock.handle('skill:uninstall', ({ skillId, expectedGeneration }) => {
+    if (expectedGeneration !== skillGeneration) throw new Error('技能列表已经变化,请刷新后重试')
+    const index = demoSkills.findIndex((skill) => skill.id === skillId && skill.canUninstall)
+    if (index < 0) throw new Error('这个技能不能由设置页卸载')
+    demoSkills.splice(index, 1)
+    skillGeneration += 1
+    return demoSkillSnapshot()
+  })
+  mock.handle('skill:openFolder', () => undefined)
 
   mock.handle('message:abort', ({ sessionId }) => {
     clearTimers(sessionId)
@@ -641,6 +803,68 @@ function wireDemoBehaviors(mock: MockBridge): void {
   })
 
   mock.handle('approval:respond', ({ approvalId, decision }) => {
+    // 0.7.0 A 演示:候选卡批准 → 紧跟安装预览卡(超长截断正文);安装卡批准 → 收尾一句话
+    const skillPending = pendingSkillApprovals.get(approvalId)
+    if (skillPending) {
+      pendingSkillApprovals.delete(approvalId)
+      const { sessionId, stage } = skillPending
+      schedule(
+        sessionId,
+        () =>
+          mock.emitAgentEvent({
+            type: 'approval_resolved',
+            sessionId,
+            approvalId,
+            decision: decision === 'reject' ? 'reject' : 'approve',
+          }),
+        200,
+      )
+      if (decision !== 'reject') {
+        if (stage === 'candidate') {
+          schedule(
+            sessionId,
+            () => {
+              void import('../../../tests/helpers/mock-bridge').then(({ demoSkillInstallApprovalLong }) => {
+                const installId = nextId('approval-skill-install')
+                pendingSkillApprovals.set(installId, { sessionId, stage: 'install' })
+                mock.emitAgentEvent({
+                  type: 'approval_required',
+                  sessionId,
+                  request: { ...demoSkillInstallApprovalLong(), id: installId },
+                })
+              })
+            },
+            600,
+          )
+        } else {
+          const messageId = nextId('msg-a')
+          schedule(
+            sessionId,
+            () =>
+              mock.emitAgentEvent({ type: 'message_start', sessionId, messageId, createdAt: Date.now() }),
+            500,
+          )
+          chunkText('装好了,新建对话后就能用。', 8).forEach((delta, index) => {
+            schedule(
+              sessionId,
+              () => mock.emitAgentEvent({ type: 'text_delta', sessionId, messageId, delta }),
+              600 + index * 90,
+            )
+          })
+          schedule(
+            sessionId,
+            () => mock.emitAgentEvent({ type: 'message_end', sessionId, messageId }),
+            600 + chunkText('装好了,新建对话后就能用。', 8).length * 90,
+          )
+          schedule(
+            sessionId,
+            () => mock.emitAgentEvent({ type: 'agent_end', sessionId }),
+            700 + chunkText('装好了,新建对话后就能用。', 8).length * 90,
+          )
+        }
+      }
+      return undefined
+    }
     // 派活确认(0.3.0):先回 approval_resolved,再演示 run 状态流转(queued→running / rejected)
     const delegationRun = pendingDelegations.get(approvalId)
     if (delegationRun) {
@@ -752,9 +976,13 @@ function wireDemoBehaviors(mock: MockBridge): void {
 
     const messageId = nextId('msg-a')
     const wantsApproval = /整理|移动|归档/.test(text)
-    const reply = wantsApproval
-      ? '数清楚了,一共 38 张图片。动手之前先问你一句:'
-      : DEMO_REPLY
+    // 0.7.0 A 演示:「装个技能/技能市场」触发候选卡(8 候选满编 fixture)
+    const wantsSkillMarket = /装个?技能|技能市场/.test(text)
+    const reply = wantsSkillMarket
+      ? '我在技能市场搜了一下,这些看起来靠谱,你挑一个:'
+      : wantsApproval
+        ? '数清楚了,一共 38 张图片。动手之前先问你一句:'
+        : DEMO_REPLY
 
     schedule(
       sessionId,
@@ -770,6 +998,28 @@ function wireDemoBehaviors(mock: MockBridge): void {
       )
     })
     const afterText = 400 + chunkText(reply, 14).length * 90 + 150
+    if (wantsSkillMarket) {
+      schedule(
+        sessionId,
+        () => {
+          void import('../../../tests/helpers/mock-bridge').then(
+            ({ demoSkillCandidateApproval, DEMO_SKILL_MARKET_CANDIDATES_8 }) => {
+              const candidateApprovalId = nextId('approval-skill-candidate')
+              pendingSkillApprovals.set(candidateApprovalId, { sessionId, stage: 'candidate' })
+              mock.emitAgentEvent({
+                type: 'approval_required',
+                sessionId,
+                request: {
+                  ...demoSkillCandidateApproval(Date.now(), DEMO_SKILL_MARKET_CANDIDATES_8),
+                  id: candidateApprovalId,
+                },
+              })
+            },
+          )
+        },
+        afterText,
+      )
+    }
     if (wantsApproval) {
       const toolCallId = nextId('toolcall')
       const approvalId = nextId('approval')

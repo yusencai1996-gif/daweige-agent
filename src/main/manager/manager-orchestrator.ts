@@ -201,7 +201,7 @@ export class ManagerOrchestrator {
       ? [clipFact(`上游执行期的越界事实(主进程权威记录,仅供参考):${handoff.boundaryFacts.join('；')}`)]
       : []
     // A-19:上游数据明细随定论传给下游,免去下游想读原件核对的冲动(原件读取仍被边界拦)。
-    // 独立复审 整改:合并为单条(与 unmet/boundary 同构)——分条时 8 来源×2+固定 4 条
+    // backend-reviewer 整改:合并为单条(与 unmet/boundary 同构)——分条时 8 来源×2+固定 4 条
     // 必然撞 20 条上限,常态交棒会整体报错;合并只牺牲极端场景的部分明细长度(clipFact 截断有标注)。
     const detailFacts = handoff.detailData.length > 0
       ? [clipFact(handoff.detailData.join('；'))]

@@ -2,7 +2,7 @@
 
 ## 技术栈
 
-大微阁基于 Electron 43、React 和 TypeScript 构建，Agent 能力使用 pi runtime 0.84.2。TypeScript 开启严格模式，渲染进程通过受控 IPC 与主进程通信。
+大微阁基于 Electron 43、React 和 TypeScript 构建，Agent 能力使用 pi runtime 0.84.4。TypeScript 开启严格模式，渲染进程通过受控 IPC 与主进程通信。
 
 ## 目录结构
 
